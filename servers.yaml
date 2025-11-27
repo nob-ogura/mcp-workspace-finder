@@ -1,0 +1,60 @@
+# Template for MCP server process definitions.
+# CLI/Env override priority (future phases): --mock > ALLOW_REAL=1 > mode below.
+
+services:
+  slack:
+    mode: mock  # real | mock (default real)
+    kind: binary  # Go binary from korotovsky/slack-mcp-server
+    exec: /path/to/slack-mcp-server
+    args: []
+    workdir: .
+    env:
+      SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+    auth_files:
+      - path: secrets/slack_token.json
+        description: Cache file if the server persists tokens locally.
+    mock:
+      exec: go run ./cmd/mock_slack_server
+      args: []
+      workdir: .
+
+  github:
+    mode: mock  # real | mock
+    kind: python  # github/github-mcp-server
+    exec: python
+    args:
+      - -m
+      - github_mcp_server
+    workdir: /path/to/github-mcp-server
+    env:
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+    auth_files:
+      - path: secrets/github_token.json
+        description: Optional cached OAuth token; PAT is primary.
+    mock:
+      exec: python
+      args:
+        - -m
+        - tests.mocks.github_server
+      workdir: .
+
+  drive:
+    mode: mock  # real | mock
+    kind: python  # modelcontextprotocol/servers gdrive
+    exec: python
+    args:
+      - -m
+      - modelcontextprotocol.servers.gdrive
+    workdir: /path/to/modelcontextprotocol/servers
+    env:
+      DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
+      GOOGLE_CREDENTIALS_PATH: ${GOOGLE_CREDENTIALS_PATH}
+    auth_files:
+      - path: ${DRIVE_TOKEN_PATH}
+        description: OAuth token.json saved after first consent.
+    mock:
+      exec: python
+      args:
+        - -m
+        - tests.mocks.gdrive_server
+      workdir: .
