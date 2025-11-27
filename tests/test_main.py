@@ -143,6 +143,188 @@ def test_missing_keys_fallback_to_mock(monkeypatch, tmp_path, capsys):
     assert "Warning" in out
 
 
+def test_real_smoke_enabled_when_env_and_no_mock(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+          drive:
+            mode: real
+            kind: node
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
+              GOOGLE_CREDENTIALS_PATH: ${GOOGLE_CREDENTIALS_PATH}
+            mock:
+              exec: /bin/echo
+              args: ["mock-drive"]
+              workdir: .
+        """,
+    )
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("SLACK_USER_TOKEN", "token-slack")
+    monkeypatch.setenv("GITHUB_TOKEN", "token-github")
+    monkeypatch.setenv("DRIVE_TOKEN_PATH", "/tmp/token.json")
+    monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", "/tmp/creds.json")
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    out = capsys.readouterr().out
+    assert out.count("real smoke enabled") == 1
+    assert "real smoke skipped" not in out
+    assert "slack=real" in out
+    assert "github=real" in out
+    assert "drive=real" in out
+
+
+def test_real_smoke_skipped_without_allow_real(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+          drive:
+            mode: real
+            kind: node
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
+              GOOGLE_CREDENTIALS_PATH: ${GOOGLE_CREDENTIALS_PATH}
+            mock:
+              exec: /bin/echo
+              args: ["mock-drive"]
+              workdir: .
+        """,
+    )
+    monkeypatch.delenv("ALLOW_REAL", raising=False)
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    out = capsys.readouterr().out
+    assert out.count("real smoke skipped") == 1
+    assert "real smoke enabled" not in out
+    assert "slack=mock" in out
+    assert "github=mock" in out
+    assert "drive=mock" in out
+
+
+def test_real_smoke_skipped_when_mock_option(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+          drive:
+            mode: real
+            kind: node
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
+              GOOGLE_CREDENTIALS_PATH: ${GOOGLE_CREDENTIALS_PATH}
+            mock:
+              exec: /bin/echo
+              args: ["mock-drive"]
+              workdir: .
+        """,
+    )
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("SLACK_USER_TOKEN", "token-slack")
+    monkeypatch.setenv("GITHUB_TOKEN", "token-github")
+    monkeypatch.setenv("DRIVE_TOKEN_PATH", "/tmp/token.json")
+    monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", "/tmp/creds.json")
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=True, config_path=config_path, start_services=False)
+
+    out = capsys.readouterr().out
+    assert out.count("real smoke skipped") == 1
+    assert "real smoke enabled" not in out
+    assert "slack=mock" in out
+    assert "github=mock" in out
+    assert "drive=mock" in out
+
+
 def test_show_startup_status_uses_spinner(mocker):
     sleep = mocker.patch("time.sleep")
     status = mocker.patch("app.__main__.console.status")

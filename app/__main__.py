@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,16 @@ MONITOR_WINDOW = 0.8
 
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
+
+
+def real_smoke_enabled(force_mock: bool, allow_real_env: str | bool | None = None) -> bool:
+    """Return True when real smoke should run based on env and CLI flags."""
+    if force_mock:
+        return False
+    flag = os.getenv("ALLOW_REAL") if allow_real_env is None else allow_real_env
+    if isinstance(flag, bool):
+        return flag
+    return flag == "1"
 
 
 def show_startup_status(mode_summary_text: str) -> None:
@@ -93,7 +104,18 @@ def repl_loop(
 ) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
     definitions = load_server_definitions(config_path)
-    resolved = resolve_service_modes(definitions, force_mock=force_mock)
+    smoke_enabled = real_smoke_enabled(force_mock)
+    console.print(
+        "[green]real smoke enabled[/]"
+        if smoke_enabled
+        else "[yellow]real smoke skipped (mock mode)[/]"
+    )
+
+    resolved = resolve_service_modes(
+        definitions,
+        force_mock=force_mock,
+        allow_real=smoke_enabled,
+    )
 
     for decision in resolved.values():
         if decision.warning:

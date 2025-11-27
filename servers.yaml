@@ -39,16 +39,16 @@ services:
       workdir: .
 
   drive:
-    mode: mock  # real | mock
-    kind: python  # modelcontextprotocol/servers gdrive
-    exec: python
+    mode: real  # real | mock
+    kind: node  # @modelcontextprotocol/server-gdrive (Node)
+    exec: npx
     args:
-      - -m
-      - modelcontextprotocol.servers.gdrive
-    workdir: /path/to/modelcontextprotocol/servers
+      - -y
+      - "@modelcontextprotocol/server-gdrive"
+    workdir: .
     env:
-      DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
-      GOOGLE_CREDENTIALS_PATH: ${GOOGLE_CREDENTIALS_PATH}
+      GDRIVE_CREDENTIALS_PATH: ${DRIVE_TOKEN_PATH}
+      GDRIVE_OAUTH_PATH: ${GOOGLE_CREDENTIALS_PATH}
     auth_files:
       - path: ${DRIVE_TOKEN_PATH}
         description: OAuth token.json saved after first consent.
