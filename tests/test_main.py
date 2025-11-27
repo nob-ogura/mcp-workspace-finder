@@ -1,74 +1,13 @@
 import builtins
+import textwrap
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Callable
 
 import pytest
 
-from app.__main__ import (
-    REQUIRED_KEYS,
-    RunMode,
-    collect_missing_keys,
-    decide_mode,
-    repl_loop,
-    show_startup_status,
-)
-
-
-def test_collect_missing_keys_when_env_empty(monkeypatch):
-    monkeypatch.delenv(REQUIRED_KEYS[0], raising=False)
-
-    assert collect_missing_keys() == [REQUIRED_KEYS[0]]
-
-
-def test_collect_missing_keys_when_env_present(monkeypatch):
-    monkeypatch.setenv(REQUIRED_KEYS[0], "token")
-
-    assert collect_missing_keys() == []
-
-
-def test_decide_mode_force_mock_overrides_env(monkeypatch):
-    # Even when real mode is allowed and keys exist, --mock should win.
-    monkeypatch.setenv("ALLOW_REAL", "1")
-    monkeypatch.setenv(REQUIRED_KEYS[0], "token")
-
-    mode, warning = decide_mode(force_mock=True)
-
-    assert mode is RunMode.MOCK
-    assert warning is None
-
-
-def test_decide_mode_real_only_when_allowed_and_keys_present(monkeypatch):
-    monkeypatch.setenv("ALLOW_REAL", "1")
-    monkeypatch.setenv(REQUIRED_KEYS[0], "token")
-
-    mode, warning = decide_mode(force_mock=False)
-
-    assert mode is RunMode.REAL
-    assert warning is None
-
-
-def test_decide_mode_warns_and_falls_back_to_mock(monkeypatch):
-    monkeypatch.setenv("ALLOW_REAL", "1")
-    monkeypatch.delenv(REQUIRED_KEYS[0], raising=False)
-
-    mode, warning = decide_mode(force_mock=False)
-
-    assert mode is RunMode.MOCK
-    assert warning is not None
-    assert REQUIRED_KEYS[0] in warning
-
-
-def test_show_startup_status_uses_spinner(mocker):
-    sleep = mocker.patch("time.sleep")
-    status = mocker.patch("app.__main__.console.status")
-
-    show_startup_status(RunMode.MOCK)
-
-    status.assert_called_once()
-    # Prevent flakiness: confirm spinner message references mode
-    args, _ = status.call_args
-    assert RunMode.MOCK.value in args[0]
-    sleep.assert_called_once_with(0.1)
+from app.config import RunMode, load_server_definitions, resolve_service_modes
+from app.__main__ import repl_loop, show_startup_status
 
 
 def _iter_inputs(values: list[str]) -> Callable[[str], str]:
@@ -76,31 +15,141 @@ def _iter_inputs(values: list[str]) -> Callable[[str], str]:
     return lambda _prompt="": next(it)
 
 
-def test_repl_loop_echo_and_exit(monkeypatch, capsys):
-    # Avoid touching environment or sleeping during the loop
-    monkeypatch.setattr(
-        "app.__main__.decide_mode", lambda force_mock: (RunMode.MOCK, None)
+def _write_config(tmp_path: Path, yaml_text: str) -> Path:
+    path = tmp_path / "servers.yaml"
+    path.write_text(textwrap.dedent(yaml_text))
+    return path
+
+
+def test_load_server_definitions_extracts_required_keys(tmp_path):
+    path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock"]
+              workdir: .
+        """,
     )
-    monkeypatch.setattr("app.__main__.show_startup_status", lambda mode: None)
-    monkeypatch.setattr(builtins, "input", _iter_inputs(["hello", "exit"]))
 
-    repl_loop(force_mock=False)
+    configs = load_server_definitions(path)
 
-    out = capsys.readouterr().out
-    assert "echo: hello" in out
-    assert "Goodbye." in out
+    assert set(configs.keys()) == {"slack"}
+    slack = configs["slack"]
+    assert slack.declared_mode is RunMode.REAL
+    assert "SLACK_USER_TOKEN" in slack.required_env_keys()
 
 
-def test_repl_loop_warns_when_decide_mode_returns_warning(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "app.__main__.decide_mode",
-        lambda force_mock: (RunMode.MOCK, "鍵不足によりモックへフォールバックします"),
+def test_cli_override_warns_and_forces_mock(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+        """,
     )
-    monkeypatch.setattr("app.__main__.show_startup_status", lambda mode: None)
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("SLACK_USER_TOKEN", "token-present")
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
     monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
 
-    repl_loop(force_mock=False)
+    repl_loop(force_mock=True, config_path=config_path)
 
     out = capsys.readouterr().out
+    assert out.count("CLI override") == 1
+    assert "slack=mock" in out
+
+
+def test_allow_real_selects_real_when_keys_present(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          github:
+            mode: real
+            kind: python
+            exec: python
+            args: ["-m", "github_mcp_server"]
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+            mock:
+              exec: python
+              args: ["-m", "tests.mocks.github_server"]
+              workdir: .
+        """,
+    )
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("GITHUB_TOKEN", "token-present")
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path)
+
+    out = capsys.readouterr().out
+    assert "github=real" in out
+    assert "Warning" not in out
+
+
+def test_missing_keys_fallback_to_mock(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+        """,
+    )
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.delenv("SLACK_USER_TOKEN", raising=False)
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path)
+
+    out = capsys.readouterr().out
+    assert "鍵不足によりモックへフォールバック" in out
+    assert "slack=mock" in out
     assert "Warning" in out
-    assert "モック" in out
+
+
+def test_show_startup_status_uses_spinner(mocker):
+    sleep = mocker.patch("time.sleep")
+    status = mocker.patch("app.__main__.console.status")
+
+    show_startup_status("slack=mock")
+
+    status.assert_called_once()
+    args, _ = status.call_args
+    assert "slack=mock" in args[0]
+    sleep.assert_called_once_with(0.1)

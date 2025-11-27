@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 import sys
 import time
-from enum import Enum
+from pathlib import Path
 
 import typer
 from rich.console import Console
+
+from app.config import load_server_definitions, mode_summary, resolve_service_modes
 
 app = typer.Typer(
     add_completion=False,
@@ -20,63 +21,32 @@ app = typer.Typer(
 
 console = Console()
 
-REQUIRED_KEYS = ["OPENAI_API_KEY"]  # Placeholder list; expanded in later phases.
 
 
-class RunMode(str, Enum):
-    MOCK = "mock"
-    REAL = "real"
-
-
-def collect_missing_keys() -> list[str]:
-    """Return required credential keys that are not set in the environment."""
-    return [key for key in REQUIRED_KEYS if not os.getenv(key)]
-
-
-def decide_mode(force_mock: bool) -> tuple[RunMode, str | None]:
-    """Determine runtime mode and an optional warning message.
-
-    Priority: --mock > ALLOW_REAL=1 (with keys present) > fallback to mock.
-    """
-
-    if force_mock:
-        return RunMode.MOCK, None
-
-    allow_real = os.getenv("ALLOW_REAL") == "1"
-    missing_keys = collect_missing_keys()
-
-    if allow_real and not missing_keys:
-        return RunMode.REAL, None
-
-    warning = None
-    if missing_keys:
-        warning = (
-            "鍵不足によりモックへフォールバックします: "
-            f"{', '.join(missing_keys)}"
-        )
-
-    return RunMode.MOCK, warning
-
-
-def show_startup_status(mode: RunMode) -> None:
+def show_startup_status(mode_summary_text: str) -> None:
     """Display a short status spinner to indicate startup progress."""
     with console.status(
-        f"Preparing workspace finder (mode: {mode.value})...", spinner="dots"
+        f"Preparing workspace finder ({mode_summary_text})...", spinner="dots"
     ):
         time.sleep(0.1)
 
 
-def repl_loop(force_mock: bool) -> None:
+def repl_loop(force_mock: bool, config_path: Path | None = None) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
-    mode, warning = decide_mode(force_mock)
+    definitions = load_server_definitions(config_path)
+    resolved = resolve_service_modes(definitions, force_mock=force_mock)
 
-    if warning:
-        console.print(f"[yellow]Warning:[/] {warning}")
+    for decision in resolved.values():
+        if decision.warning:
+            console.print(f"[yellow]Warning:[/] {decision.warning}")
 
-    show_startup_status(mode)
+    summary = mode_summary(resolved)
+    console.print(f"Selected modes: {summary}")
+
+    show_startup_status(summary)
     console.print(
         "[bold cyan]workspace-finder[/] REPL ready. "
-        f"Mode: [bold]{mode.value}[/]. Type 'exit' to quit."
+        f"Modes: [bold]{summary}[/]. Type 'exit' to quit."
     )
 
     while True:
