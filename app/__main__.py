@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from enum import Enum
 
 import typer
 from rich.console import Console
@@ -22,27 +23,61 @@ console = Console()
 REQUIRED_KEYS = ["OPENAI_API_KEY"]  # Placeholder list; expanded in later phases.
 
 
-def warn_missing_keys() -> None:
-    """Emit a one-time warning when required credentials are absent."""
-    missing = [key for key in REQUIRED_KEYS if not os.getenv(key)]
-    if missing:
-        console.print(
-            "[yellow]Warning:[/] Missing credentials "
-            f"{', '.join(missing)} — running in limited mode."
+class RunMode(str, Enum):
+    MOCK = "mock"
+    REAL = "real"
+
+
+def collect_missing_keys() -> list[str]:
+    """Return required credential keys that are not set in the environment."""
+    return [key for key in REQUIRED_KEYS if not os.getenv(key)]
+
+
+def decide_mode(force_mock: bool) -> tuple[RunMode, str | None]:
+    """Determine runtime mode and an optional warning message.
+
+    Priority: --mock > ALLOW_REAL=1 (with keys present) > fallback to mock.
+    """
+
+    if force_mock:
+        return RunMode.MOCK, None
+
+    allow_real = os.getenv("ALLOW_REAL") == "1"
+    missing_keys = collect_missing_keys()
+
+    if allow_real and not missing_keys:
+        return RunMode.REAL, None
+
+    warning = None
+    if missing_keys:
+        warning = (
+            "鍵不足によりモックへフォールバックします: "
+            f"{', '.join(missing_keys)}"
         )
 
+    return RunMode.MOCK, warning
 
-def show_startup_status() -> None:
+
+def show_startup_status(mode: RunMode) -> None:
     """Display a short status spinner to indicate startup progress."""
-    with console.status("Preparing workspace finder (stub)...", spinner="dots"):
+    with console.status(
+        f"Preparing workspace finder (mode: {mode.value})...", spinner="dots"
+    ):
         time.sleep(0.1)
 
 
-def repl_loop() -> None:
+def repl_loop(force_mock: bool) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
-    warn_missing_keys()
-    show_startup_status()
-    console.print("[bold cyan]workspace-finder[/] REPL ready. Type 'exit' to quit.")
+    mode, warning = decide_mode(force_mock)
+
+    if warning:
+        console.print(f"[yellow]Warning:[/] {warning}")
+
+    show_startup_status(mode)
+    console.print(
+        "[bold cyan]workspace-finder[/] REPL ready. "
+        f"Mode: [bold]{mode.value}[/]. Type 'exit' to quit."
+    )
 
     while True:
         try:
@@ -64,7 +99,14 @@ def repl_loop() -> None:
 
 
 @app.callback()
-def main(ctx: typer.Context):
+def main(
+    ctx: typer.Context,
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Force mock mode; skips real credential validation.",
+    ),
+):
     """
     CLI entry point. In TTY without subcommands, enter the REPL;
     otherwise fall back to Typer's help/command handling.
@@ -77,13 +119,19 @@ def main(ctx: typer.Context):
         typer.echo(ctx.get_help())
         raise typer.Exit(code=0)
 
-    repl_loop()
+    repl_loop(force_mock=mock)
 
 
 @app.command()
-def repl():
+def repl(
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Force mock mode; skips real credential validation.",
+    )
+):
     """Explicitly start the REPL even when invoked as a subcommand."""
-    repl_loop()
+    repl_loop(force_mock=mock)
 
 
 if __name__ == "__main__":
