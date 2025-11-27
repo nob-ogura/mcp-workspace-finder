@@ -1,0 +1,19 @@
+# Byte-compiled / cached files
+__pycache__/
+*.py[cod]
+
+# Test & coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+.poetry-env/
+
+# Build outputs
+build/
+dist/
+
+# OS files
+.DS_Store

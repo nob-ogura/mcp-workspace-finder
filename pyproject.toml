@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "mcp-workspace-finder"
+version = "0.1.0"
+description = "MCP workspace finder CLI PoC"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+typer = "^0.12.5"
+click = ">=8.1,<8.2"
+rich = "^13.9.3"
+modelcontextprotocol = "^1.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+pytest-mock = "^3.14.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
