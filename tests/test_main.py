@@ -73,7 +73,7 @@ def test_cli_override_warns_and_forces_mock(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
     monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
 
-    repl_loop(force_mock=True, config_path=config_path)
+    repl_loop(force_mock=True, config_path=config_path, start_services=False)
 
     out = capsys.readouterr().out
     assert out.count("CLI override") == 1
@@ -104,7 +104,7 @@ def test_allow_real_selects_real_when_keys_present(monkeypatch, tmp_path, capsys
     monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
     monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
 
-    repl_loop(force_mock=False, config_path=config_path)
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
 
     out = capsys.readouterr().out
     assert "github=real" in out
@@ -135,7 +135,7 @@ def test_missing_keys_fallback_to_mock(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
     monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
 
-    repl_loop(force_mock=False, config_path=config_path)
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
 
     out = capsys.readouterr().out
     assert "鍵不足によりモックへフォールバック" in out

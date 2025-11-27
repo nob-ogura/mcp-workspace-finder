@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
 import time
 from pathlib import Path
@@ -8,6 +10,7 @@ import typer
 from rich.console import Console
 
 from app.config import load_server_definitions, mode_summary, resolve_service_modes
+from app.process import launch_services_async
 
 app = typer.Typer(
     add_completion=False,
@@ -20,6 +23,10 @@ app = typer.Typer(
 )
 
 console = Console()
+READINESS_TIMEOUT = 1.0
+
+# Emit warnings/errors once to stderr so startup issues are visible in CLI
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 
 
 
@@ -31,7 +38,26 @@ def show_startup_status(mode_summary_text: str) -> None:
         time.sleep(0.1)
 
 
-def repl_loop(force_mock: bool, config_path: Path | None = None) -> None:
+async def _start_services(definitions, resolved, *, readiness_timeout: float):
+    statuses = await launch_services_async(
+        definitions,
+        resolved,
+        readiness_timeout=readiness_timeout,
+    )
+
+    for status in statuses.values():
+        if status.ready:
+            console.print(f"[green]{status.name} ready[/]")
+    return statuses
+
+
+def repl_loop(
+    force_mock: bool,
+    config_path: Path | None = None,
+    *,
+    start_services: bool = True,
+    readiness_timeout: float = READINESS_TIMEOUT,
+) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
     definitions = load_server_definitions(config_path)
     resolved = resolve_service_modes(definitions, force_mock=force_mock)
@@ -44,6 +70,10 @@ def repl_loop(force_mock: bool, config_path: Path | None = None) -> None:
     console.print(f"Selected modes: {summary}")
 
     show_startup_status(summary)
+
+    if start_services:
+        asyncio.run(_start_services(definitions, resolved, readiness_timeout=readiness_timeout))
+
     console.print(
         "[bold cyan]workspace-finder[/] REPL ready. "
         f"Modes: [bold]{summary}[/]. Type 'exit' to quit."
