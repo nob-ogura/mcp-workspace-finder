@@ -44,6 +44,42 @@ Google Drive、Slack、GitHub を Model Context Protocol (MCP) 経由で横断�
 - モックを強制する: `poetry run python -m app --mock`。
 - 実 API 呼び出しを許可する: 環境変数 `ALLOW_REAL=1` を設定（`--mock` 指定時はモックが優先）。
 
+### フェーズ3: 実環境スモーク（受入基準）手順まとめ
+起動時に Slack/GitHub/Drive が real になり、ログに 1 回だけ `real smoke enabled` が出ることを確認するための手順です。
+
+1) 資材をそろえる（全サービス共通）
+- `.env` に `OPENAI_API_KEY`, `SLACK_USER_TOKEN` (xoxp-), `GITHUB_TOKEN` (PAT), `GOOGLE_CREDENTIALS_PATH`, `DRIVE_TOKEN_PATH` を設定し、参照先のファイルが読み取り可能であること。
+- `servers.yaml` で各サービスの `mode` を `real` のままにする（デフォルトのままで OK）。
+
+2) Slack/GitHub の auth_files を満たす
+- `servers.yaml` の `auth_files` で `secrets/slack_token.json`, `secrets/github_token.json` の存在が必須。現行サーバーは中身を使わないため、空ファイルで通過可能。
+  ```sh
+  mkdir -p secrets
+  touch secrets/slack_token.json secrets/github_token.json
+  chmod 600 secrets/slack_token.json secrets/github_token.json
+  ```
+- サーバー実装がキャッシュを書き出す場合は、上記空ファイルを置いた状態で `ALLOW_REAL=1 poetry run python -m app`（またはサーバーバイナリ単体）を一度実行すれば、`secrets/*.json` が実データで上書きされ、以降再認可なしで再利用できます。
+
+3) Drive 実サーバーの準備
+- `servers.yaml` に下記のように記述。
+    ```yaml
+    exec: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-gdrive"
+    ```
+
+4) 実行
+- `ALLOW_REAL=1 poetry run python -m app`（`--mock` は付けない）。
+
+5) 確認
+- 起動ログに `real smoke enabled` が 1 回だけ出る。
+- モード表示が `slack=real, github=real, drive=real` になっている。いずれか欠損すると自動で mock へフォールバックし、受入基準を満たさない。
+
+6) トラブルシュート
+- Slack/GitHub が mock になる: `secrets/slack_token.json`, `secrets/github_token.json` の存在・パーミッションを確認。空ファイルで可。
+- Drive が timeout する: 事前インストールするか、`READINESS_TIMEOUT` を一時的に延長して初回ダウンロードを待つ。
+
 ## ノート
 - トークン／認証情報はローカルに保持し、`.env`、`token.json`、`secrets/` 配下はコミットしないこと。
 - Docker/コンテナは使用せず、Poetry が作成する仮想環境（`.venv` または `.poetry-env`）を利用してください。

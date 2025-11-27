@@ -3,7 +3,7 @@
 
 services:
   slack:
-    mode: mock  # real | mock (default real)
+    mode: real  # real | mock (default real)
     kind: binary  # Go binary from korotovsky/slack-mcp-server
     exec: /path/to/slack-mcp-server
     args: []
@@ -14,12 +14,14 @@ services:
       - path: secrets/slack_token.json
         description: Cache file if the server persists tokens locally.
     mock:
-      exec: go run ./cmd/mock_slack_server
-      args: []
+      exec: python
+      args:
+        - -m
+        - tests.mocks.slack_server
       workdir: .
 
   github:
-    mode: mock  # real | mock
+    mode: real  # real | mock
     kind: python  # github/github-mcp-server
     exec: python
     args:

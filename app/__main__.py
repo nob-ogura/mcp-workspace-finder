@@ -10,7 +10,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from app.config import load_server_definitions, mode_summary, resolve_service_modes
+from app.config import RunMode, load_server_definitions, mode_summary, resolve_service_modes
 from app.process import launch_services_async, monitor_services
 from app.status_display import emit_new_warnings, render_status_table
 
@@ -25,7 +25,7 @@ app = typer.Typer(
 )
 
 console = Console()
-READINESS_TIMEOUT = 1.0
+READINESS_TIMEOUT = 3.0
 MONITOR_WINDOW = 0.8
 
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
@@ -123,6 +123,12 @@ def repl_loop(
 
     summary = mode_summary(resolved)
     console.print(f"Selected modes: {summary}")
+
+    if smoke_enabled:
+        all_real = all(decision.selected_mode is RunMode.REAL for decision in resolved.values())
+        status_label = "実施可" if all_real else "未実施（欠損あり）"
+        color = "green" if all_real else "yellow"
+        console.print(f"[{color}]real smoke status:[/] {status_label}")
 
     show_startup_status(summary)
 

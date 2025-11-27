@@ -53,6 +53,7 @@ class ResolvedService:
     selected_mode: RunMode
     missing_keys: list[str]
     warning: str | None
+    missing_files: list[str] = field(default_factory=list)
 
     @property
     def is_override(self) -> bool:
@@ -72,6 +73,26 @@ def _extract_placeholders(values: Any) -> set[str]:
         if isinstance(value, str):
             placeholders.update(_PLACEHOLDER_PATTERN.findall(value))
     return placeholders
+
+
+def _render_template(value: str, env: Mapping[str, str]) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        return env.get(match.group(1), "")
+
+    return _PLACEHOLDER_PATTERN.sub(_replace, value)
+
+
+def _collect_missing_auth_files(definition: ServerDefinition, env: Mapping[str, str]) -> list[str]:
+    missing: list[str] = []
+    for raw_path in definition.auth_files:
+        resolved = _render_template(raw_path, env).strip()
+        if not resolved:
+            missing.append(raw_path)
+            continue
+        candidate = Path(resolved).expanduser()
+        if not candidate.exists() or not candidate.is_file() or not os.access(candidate, os.R_OK):
+            missing.append(resolved)
+    return missing
 
 
 def _parse_mode(raw_mode: str | None) -> RunMode:
@@ -132,6 +153,7 @@ def resolve_service_modes(
     for name, definition in definitions.items():
         warning = None
         missing: list[str] = []
+        missing_files: list[str] = []
         selected = RunMode.MOCK
 
         if force_mock:
@@ -148,7 +170,15 @@ def resolve_service_modes(
                     )
                     selected = RunMode.MOCK
                 else:
-                    selected = RunMode.REAL
+                    missing_files = _collect_missing_auth_files(definition, os.environ)
+                    if missing_files:
+                        warning = (
+                            "認証ファイル不足によりモックへフォールバック: "
+                            f"{name} ({', '.join(missing_files)})"
+                        )
+                        selected = RunMode.MOCK
+                    else:
+                        selected = RunMode.REAL
             else:
                 selected = RunMode.MOCK
 
@@ -157,6 +187,7 @@ def resolve_service_modes(
             declared_mode=definition.declared_mode,
             selected_mode=selected,
             missing_keys=missing,
+            missing_files=missing_files,
             warning=warning,
         )
 

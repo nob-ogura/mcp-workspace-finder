@@ -335,3 +335,134 @@ def test_show_startup_status_uses_spinner(mocker):
     args, _ = status.call_args
     assert "slack=mock" in args[0]
     sleep.assert_called_once_with(0.1)
+
+
+def test_auth_files_present_allow_real(monkeypatch, tmp_path, capsys):
+    drive_token = tmp_path / "token.json"
+    drive_token.write_text("{}")
+
+    config_path = _write_config(
+        tmp_path,
+        f"""
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${{SLACK_USER_TOKEN}}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${{GITHUB_TOKEN}}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+          drive:
+            mode: real
+            kind: node
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              DRIVE_TOKEN_PATH: ${{DRIVE_TOKEN_PATH}}
+              GOOGLE_CREDENTIALS_PATH: ${{GOOGLE_CREDENTIALS_PATH}}
+            auth_files:
+              - path: ${{DRIVE_TOKEN_PATH}}
+            mock:
+              exec: /bin/echo
+              args: ["mock-drive"]
+              workdir: .
+        """,
+    )
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("SLACK_USER_TOKEN", "token-slack")
+    monkeypatch.setenv("GITHUB_TOKEN", "token-github")
+    monkeypatch.setenv("DRIVE_TOKEN_PATH", str(drive_token))
+    monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", str(tmp_path / "creds.json"))
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    out = capsys.readouterr().out
+    assert "drive=real" in out
+    assert "認証ファイル不足" not in out
+    assert "未実施（欠損あり）" not in out
+
+
+def test_missing_auth_file_falls_back_and_marks_smoke_pending(monkeypatch, tmp_path, capsys):
+    missing_token = tmp_path / "missing_token.json"
+
+    config_path = _write_config(
+        tmp_path,
+        f"""
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${{SLACK_USER_TOKEN}}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${{GITHUB_TOKEN}}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+          drive:
+            mode: real
+            kind: node
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              DRIVE_TOKEN_PATH: ${{DRIVE_TOKEN_PATH}}
+              GOOGLE_CREDENTIALS_PATH: ${{GOOGLE_CREDENTIALS_PATH}}
+            auth_files:
+              - path: ${{DRIVE_TOKEN_PATH}}
+            mock:
+              exec: /bin/echo
+              args: ["mock-drive"]
+              workdir: .
+        """,
+    )
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("SLACK_USER_TOKEN", "token-slack")
+    monkeypatch.setenv("GITHUB_TOKEN", "token-github")
+    monkeypatch.setenv("DRIVE_TOKEN_PATH", str(missing_token))
+    monkeypatch.setenv("GOOGLE_CREDENTIALS_PATH", str(tmp_path / "creds.json"))
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    out = capsys.readouterr().out
+    assert "認証ファイル不足" in out
+    assert "drive=mock" in out
+    assert "slack=real" in out
+    assert "github=real" in out
+    assert out.count("未実施（欠損あり）") == 1
