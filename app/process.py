@@ -50,6 +50,7 @@ class RuntimeStatus:
     command: list[str] | None
     process: AsyncProcess | None
     ready: bool
+    restart_count: int = 0
     warning: str | None = None
     error: str | None = None
 
@@ -124,6 +125,12 @@ def _build_command_spec(
     return CommandSpec(argv=argv, env=env, workdir=workdir)
 
 
+def _build_default_env(base_env: Mapping[str, str] | None) -> dict[str, str]:
+    default_env = dict(os.environ if base_env is None else base_env)
+    default_env.setdefault("PYTHONUNBUFFERED", "1")
+    return default_env
+
+
 def start_services(
     definitions: Mapping[str, ServerDefinition],
     resolved: Mapping[str, ResolvedService],
@@ -189,6 +196,74 @@ async def _wait_for_readiness(name: str, process: AsyncProcess, timeout: float) 
     return True, None
 
 
+async def _start_service_async(
+    name: str,
+    decision: ResolvedService,
+    definition: ServerDefinition | None,
+    default_env: Mapping[str, str],
+    readiness_timeout: float,
+) -> RuntimeStatus:
+    if not definition:
+        warning = "definition missing"
+        return RuntimeStatus(
+            name=name,
+            mode=decision.selected_mode,
+            command=None,
+            process=None,
+            ready=False,
+            warning=warning,
+            error=warning,
+        )
+
+    try:
+        spec = _build_command_spec(definition, decision.selected_mode, default_env)
+    except StartConfigurationError as exc:
+        logger.error("%s: %s", name, exc)
+        return RuntimeStatus(
+            name=name,
+            mode=decision.selected_mode,
+            command=None,
+            process=None,
+            ready=False,
+            warning=None,
+            error=str(exc),
+        )
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *spec.argv,
+            cwd=spec.workdir,
+            env=spec.env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as exc:  # noqa: BLE001
+        warning = f"起動失敗: {exc}"
+        logger.warning("%s: %s", name, warning)
+        return RuntimeStatus(
+            name=name,
+            mode=decision.selected_mode,
+            command=spec.argv,
+            process=None,
+            ready=False,
+            warning=warning,
+            error=str(exc),
+        )
+
+    ready, warning = await _wait_for_readiness(name, process, readiness_timeout)
+
+    return RuntimeStatus(
+        name=name,
+        mode=decision.selected_mode,
+        command=spec.argv,
+        process=process,
+        ready=ready,
+        warning=warning,
+        error=None if ready else warning,
+    )
+
+
 async def launch_services_async(
     definitions: Mapping[str, ServerDefinition],
     resolved: Mapping[str, ResolvedService],
@@ -202,65 +277,145 @@ async def launch_services_async(
     timeout or early exit occurs, a warning is recorded but other services
     continue to launch.
     """
-    default_env = dict(os.environ if base_env is None else base_env)
-    default_env.setdefault("PYTHONUNBUFFERED", "1")
+    default_env = _build_default_env(base_env)
 
-    async def _launch(name: str, decision: ResolvedService) -> RuntimeStatus:
-        definition = definitions.get(name)
-        if not definition:
-            return RuntimeStatus(name=name, mode=decision.selected_mode, command=None, process=None, ready=False, warning="definition missing", error="definition missing")
-
-        try:
-            spec = _build_command_spec(definition, decision.selected_mode, default_env)
-        except StartConfigurationError as exc:
-            logger.error("%s: %s", name, exc)
-            return RuntimeStatus(
-                name=name,
-                mode=decision.selected_mode,
-                command=None,
-                process=None,
-                ready=False,
-                warning=None,
-                error=str(exc),
-            )
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *spec.argv,
-                cwd=spec.workdir,
-                env=spec.env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except Exception as exc:  # noqa: BLE001
-            warning = f"起動失敗: {exc}"
-            logger.warning("%s: %s", name, warning)
-            return RuntimeStatus(
-                name=name,
-                mode=decision.selected_mode,
-                command=spec.argv,
-                process=None,
-                ready=False,
-                warning=warning,
-                error=str(exc),
-            )
-
-        ready, warning = await _wait_for_readiness(name, process, readiness_timeout)
-
-        return RuntimeStatus(
-            name=name,
-            mode=decision.selected_mode,
-            command=spec.argv,
-            process=process,
-            ready=ready,
-            warning=warning,
-            error=None if ready else warning,
+    tasks = {
+        name: asyncio.create_task(
+            _start_service_async(name, decision, definitions.get(name), default_env, readiness_timeout)
         )
-
-    tasks = {name: asyncio.create_task(_launch(name, decision)) for name, decision in resolved.items()}
+        for name, decision in resolved.items()
+    }
     results: dict[str, RuntimeStatus] = {}
     for name, task in tasks.items():
         results[name] = await task
 
     return results
+
+
+async def _read_stderr(process: AsyncProcess) -> str:
+    if process.stderr is None:
+        return ""
+
+    try:
+        data = await process.stderr.read()
+    except Exception:  # noqa: BLE001
+        return ""
+
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="ignore")
+    return str(data)
+
+
+_FATAL_KEYWORDS = (
+    "auth",
+    "credential",
+    "unauthorized",
+    "forbidden",
+    "permission",
+    "invalid token",
+)
+
+
+def _is_permanent_failure(stderr_text: str) -> bool:
+    lowered = stderr_text.lower()
+    return any(keyword in lowered for keyword in _FATAL_KEYWORDS)
+
+
+async def monitor_services(
+    definitions: Mapping[str, ServerDefinition],
+    resolved: Mapping[str, ResolvedService],
+    statuses: Mapping[str, RuntimeStatus],
+    *,
+    base_env: Mapping[str, str] | None = None,
+    readiness_timeout: float = 1.0,
+    max_restarts: int = 1,
+    stop_after: float | None = None,
+) -> Mapping[str, RuntimeStatus]:
+    """Watch running services and restart once on abnormal exits.
+
+    The monitoring loop respects ``max_restarts`` per service. When stderr
+    contains authentication/credential errors, restart is skipped and the
+    warning is recorded. When ``stop_after`` is provided, monitoring is
+    cancelled after the timeout, leaving running processes intact.
+    """
+
+    default_env = _build_default_env(base_env)
+
+    async def _monitor_single(name: str, status: RuntimeStatus) -> None:
+        decision = resolved.get(name)
+        definition = definitions.get(name)
+        if not decision or not status.process:
+            return
+
+        while status.process:
+            try:
+                returncode = await status.process.wait()
+            except asyncio.CancelledError:
+                return
+
+            stderr_text = await _read_stderr(status.process)
+
+            if returncode == 0:
+                status.ready = False
+                status.warning = status.warning or "正常終了"
+                status.error = status.error or "正常終了"
+                status.process = None
+                return
+
+            if _is_permanent_failure(stderr_text):
+                warning = "auth error detected; restart skipped"
+                logger.warning("%s: %s", name, warning)
+                status.ready = False
+                status.warning = warning
+                status.error = warning
+                status.process = None
+                return
+
+            if status.restart_count >= max_restarts:
+                warning = "再起動上限に達した"
+                logger.warning("%s: %s", name, warning)
+                status.ready = False
+                status.warning = warning
+                status.error = warning
+                status.process = None
+                return
+
+            status.restart_count += 1
+            logger.warning("%s: restart attempt #%d", name, status.restart_count)
+
+            replacement = await _start_service_async(
+                name,
+                decision,
+                definition,
+                default_env,
+                readiness_timeout,
+            )
+
+            status.command = replacement.command
+            status.process = replacement.process
+            status.ready = replacement.ready
+            status.warning = replacement.warning
+            status.error = replacement.error
+
+            if status.process is None:
+                return
+
+    tasks = [asyncio.create_task(_monitor_single(name, status)) for name, status in statuses.items() if status.process]
+
+    if not tasks:
+        return statuses
+
+    async def _wait_all() -> None:
+        await asyncio.gather(*tasks)
+
+    if stop_after is None:
+        await _wait_all()
+    else:
+        try:
+            await asyncio.wait_for(_wait_all(), timeout=stop_after)
+        except asyncio.TimeoutError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    return statuses

@@ -10,7 +10,8 @@ import typer
 from rich.console import Console
 
 from app.config import load_server_definitions, mode_summary, resolve_service_modes
-from app.process import launch_services_async
+from app.process import launch_services_async, monitor_services
+from app.status_display import emit_new_warnings, render_status_table
 
 app = typer.Typer(
     add_completion=False,
@@ -24,10 +25,10 @@ app = typer.Typer(
 
 console = Console()
 READINESS_TIMEOUT = 1.0
+MONITOR_WINDOW = 0.8
 
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
-
 
 
 def show_startup_status(mode_summary_text: str) -> None:
@@ -38,16 +39,47 @@ def show_startup_status(mode_summary_text: str) -> None:
         time.sleep(0.1)
 
 
-async def _start_services(definitions, resolved, *, readiness_timeout: float):
+async def _run_startup_with_status_board(
+    definitions,
+    resolved,
+    *,
+    readiness_timeout: float,
+    monitor_window: float,
+):
+    """Start services, show a status table, then watch for early restarts."""
     statuses = await launch_services_async(
         definitions,
         resolved,
         readiness_timeout=readiness_timeout,
     )
 
-    for status in statuses.values():
-        if status.ready:
-            console.print(f"[green]{status.name} ready[/]")
+    seen_warnings: set[tuple[str, str]] = set()
+    emit_new_warnings(console, statuses, seen_warnings)
+    render_status_table(
+        console,
+        resolved,
+        statuses,
+        title="Startup status",
+        seen_warnings=seen_warnings,
+    )
+
+    if monitor_window > 0:
+        await monitor_services(
+            definitions,
+            resolved,
+            statuses,
+            readiness_timeout=readiness_timeout,
+            stop_after=monitor_window,
+        )
+        emit_new_warnings(console, statuses, seen_warnings)
+        render_status_table(
+            console,
+            resolved,
+            statuses,
+            title="Monitoring status",
+            seen_warnings=seen_warnings,
+        )
+
     return statuses
 
 
@@ -57,6 +89,7 @@ def repl_loop(
     *,
     start_services: bool = True,
     readiness_timeout: float = READINESS_TIMEOUT,
+    monitor_window: float = MONITOR_WINDOW,
 ) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
     definitions = load_server_definitions(config_path)
@@ -72,7 +105,14 @@ def repl_loop(
     show_startup_status(summary)
 
     if start_services:
-        asyncio.run(_start_services(definitions, resolved, readiness_timeout=readiness_timeout))
+        asyncio.run(
+            _run_startup_with_status_board(
+                definitions,
+                resolved,
+                readiness_timeout=readiness_timeout,
+                monitor_window=monitor_window,
+            )
+        )
 
     console.print(
         "[bold cyan]workspace-finder[/] REPL ready. "
