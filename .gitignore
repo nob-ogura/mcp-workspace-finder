@@ -11,6 +11,11 @@ htmlcov/
 .venv/
 .poetry-env/
 
+# Local secrets / credentials
+.env
+token.json
+secrets/
+
 # Build outputs
 build/
 dist/
