@@ -180,13 +180,31 @@ def start_services(
 
 
 async def _wait_for_readiness(name: str, process: AsyncProcess, timeout: float) -> tuple[bool, str | None]:
-    try:
-        line = await asyncio.wait_for(process.stdout.readline(), timeout)
-    except asyncio.TimeoutError:
+    """Ready when either stdout or stderr emits the first line within timeout."""
+
+    async def _read_line(stream):
+        if stream is None:
+            return None
+        try:
+            data = await stream.readline()
+        except Exception:  # noqa: BLE001
+            return None
+        if not data:
+            return None
+        return data.decode("utf-8", errors="ignore") if isinstance(data, (bytes, bytearray)) else str(data)
+
+    tasks = {asyncio.create_task(_read_line(process.stdout)), asyncio.create_task(_read_line(process.stderr))}
+    done, pending = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+
+    for task in pending:
+        task.cancel()
+
+    if not done:
         warning = f"readiness timeout after {timeout:.1f}s"
         logger.warning("%s: %s", name, warning)
         return False, warning
 
+    line = next(iter(done)).result()
     if not line:
         returncode = process.returncode
         warning = f"起動失敗: exit code {returncode}" if returncode is not None else "起動失敗"
