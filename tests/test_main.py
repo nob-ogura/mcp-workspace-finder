@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+from typer.testing import CliRunner
 
 import app.__main__ as main_module
 from app.config import RunMode, load_server_definitions, resolve_service_modes
@@ -20,6 +21,55 @@ def _write_config(tmp_path: Path, yaml_text: str) -> Path:
     path = tmp_path / "servers.yaml"
     path.write_text(textwrap.dedent(yaml_text))
     return path
+
+
+def test_auto_mode_enters_repl_when_tty(monkeypatch):
+    runner = CliRunner()
+    called = {}
+
+    monkeypatch.setattr(main_module, "repl_loop", lambda **kwargs: called.setdefault("repl", kwargs))
+    monkeypatch.setattr(main_module, "_stream_isatty", lambda stream: True)
+
+    result = runner.invoke(main_module.app, [])
+
+    assert result.exit_code == 0
+    assert "repl" in called
+    assert "input mode: REPL" in result.output
+
+
+def test_auto_mode_runs_oneshot_when_query_option(monkeypatch):
+    runner = CliRunner()
+    called = {}
+
+    monkeypatch.setattr(main_module, "run_oneshot", lambda query, **kwargs: called.setdefault("oneshot", query))
+    monkeypatch.setattr(main_module, "_stream_isatty", lambda stream: True)
+
+    result = runner.invoke(main_module.app, ["--query", "社内ナレッジを検索"])
+
+    assert result.exit_code == 0
+    assert called["oneshot"] == "社内ナレッジを検索"
+    assert "input mode: ONESHOT (--query)" in result.output
+    assert "mcp>" not in result.output
+
+
+def test_auto_mode_runs_oneshot_when_stdin_piped(monkeypatch):
+    runner = CliRunner()
+    called = {}
+
+    def fake_isatty(stream):
+        if stream is main_module.sys.stdin:
+            return False
+        return True
+
+    monkeypatch.setattr(main_module, "_stream_isatty", fake_isatty)
+    monkeypatch.setattr(main_module, "run_oneshot", lambda query, **kwargs: called.setdefault("oneshot", query))
+
+    result = runner.invoke(main_module.app, [], input="Slack のDMを検索\n")
+
+    assert result.exit_code == 0
+    assert called["oneshot"] == "Slack のDMを検索"
+    assert "input mode: ONESHOT (stdin)" in result.output
+    assert "mcp>" not in result.output
 
 
 def test_load_server_definitions_extracts_required_keys(tmp_path):

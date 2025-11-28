@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -41,6 +42,42 @@ MONITOR_WINDOW = 0.8
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
 install_log_masking()
+
+
+class InputMode(Enum):
+    REPL = "repl"
+    ONESHOT = "oneshot"
+    HELP = "help"
+
+
+def _stream_isatty(stream) -> bool:
+    """Safe isatty check that tolerates StringIO in tests."""
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+def determine_input_mode(query_option: str | None) -> tuple[InputMode, str | None, str]:
+    """
+    Decide whether to launch the REPL or run a one-shot query based on input sources.
+
+    Returns (mode, query_text, source_label).
+    """
+    stdin_tty = _stream_isatty(sys.stdin)
+    stdout_tty = _stream_isatty(sys.stdout)
+
+    if query_option is not None:
+        return InputMode.ONESHOT, query_option, "--query"
+
+    if not stdin_tty:
+        piped_text = sys.stdin.read()
+        return InputMode.ONESHOT, piped_text.strip(), "stdin"
+
+    if stdin_tty and stdout_tty:
+        return InputMode.REPL, None, "tty"
+
+    return InputMode.HELP, None, "help"
 
 
 def real_smoke_enabled(force_mock: bool, allow_real_env: str | bool | None = None) -> bool:
@@ -237,6 +274,16 @@ def repl_loop(
         console.print(f"[dim]echo:[/] {line}")
 
 
+def run_oneshot(
+    query: str,
+    *,
+    force_mock: bool,
+    config_path: Path | None = None,
+) -> None:
+    """Placeholder one-shot execution path; will be extended in later tasks."""
+    console.print(f"[bold cyan]one-shot mode[/] query: {query}")
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -244,6 +291,18 @@ def main(
         False,
         "--mock",
         help="Force mock mode; skips real credential validation.",
+    ),
+    query: str | None = typer.Option(
+        None,
+        "--query",
+        "-q",
+        help="Run one query non-interactively and exit.",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to servers.yaml. Defaults to repo root servers.yaml.",
     ),
 ):
     """
@@ -253,12 +312,19 @@ def main(
     if ctx.invoked_subcommand:
         return
 
-    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
-    if not is_tty:
-        typer.echo(ctx.get_help())
+    mode, query_text, source = determine_input_mode(query)
+    console.print(f"input mode: {mode.name} ({source})")
+
+    if mode is InputMode.ONESHOT:
+        run_oneshot(query_text or "", force_mock=mock, config_path=config)
         raise typer.Exit(code=0)
 
-    repl_loop(force_mock=mock)
+    if mode is InputMode.REPL:
+        repl_loop(force_mock=mock, config_path=config)
+        return
+
+    typer.echo(ctx.get_help())
+    raise typer.Exit(code=0)
 
 
 @app.command()
