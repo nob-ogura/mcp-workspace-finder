@@ -132,7 +132,7 @@ def test_start_failure_warns_but_other_services_continue(tmp_path, caplog):
             """
             #!/usr/bin/env python3
             import sys
-            sys.stderr.write("boom\n")
+            sys.stderr.write("boom\\n")
             sys.exit(1)
             """,
         )

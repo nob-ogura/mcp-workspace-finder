@@ -191,7 +191,7 @@ def test_auth_error_does_not_retry(tmp_path, caplog):
             #!/usr/bin/env python3
             import sys
 
-            sys.stderr.write("auth error: invalid token\n")
+            sys.stderr.write("auth error: invalid token\\n")
             sys.stderr.flush()
             sys.exit(1)
             """,
@@ -203,7 +203,7 @@ def test_auth_error_does_not_retry(tmp_path, caplog):
             #!/usr/bin/env python3
             import time
             print("ready", flush=True)
-            time.sleep(0.5)
+            time.sleep(1.0)
             """,
         )
 
@@ -263,4 +263,3 @@ def test_auth_error_does_not_retry(tmp_path, caplog):
             await _cleanup(statuses)
 
     asyncio.run(_scenario())
-

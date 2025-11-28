@@ -211,6 +211,28 @@ async def _wait_for_readiness(name: str, process: AsyncProcess, timeout: float) 
         logger.warning("%s: %s", name, warning)
         return False, warning
 
+    # Try to detect an immediate crash that happened right after emitting the first line.
+    try:
+        returncode = await asyncio.wait_for(process.wait(), timeout=0.05)
+    except asyncio.TimeoutError:
+        returncode = process.returncode
+
+    if returncode not in (None, 0):
+        # Capture fatal/auth style errors from the first emitted line so the caller
+        # can surface the reason without needing stderr again. Include any remaining
+        # stderr to improve diagnostics.
+        remainder = await _read_stderr(process)
+        combined = f"{line}{remainder}"
+        fatal = _is_permanent_failure(combined)
+        warning = combined.strip() if fatal else f"起動失敗: exit code {returncode}"
+        logger.warning("%s: %s", name, warning)
+        return False, warning
+
+    if returncode == 0:
+        warning = "起動失敗: 正常終了"
+        logger.warning("%s: %s", name, warning)
+        return False, warning
+
     return True, None
 
 
@@ -270,6 +292,10 @@ async def _start_service_async(
         )
 
     ready, warning = await _wait_for_readiness(name, process, readiness_timeout)
+
+    if not ready and process.returncode is not None:
+        # Process already exited; drop the handle so monitors do not attempt restarts.
+        process = None
 
     return RuntimeStatus(
         name=name,
