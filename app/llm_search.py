@@ -63,7 +63,7 @@ TOOLS = [
                         "minItems": 2,
                     },
                 },
-                "required": ["searches"],
+                "required": ["searches", "alternatives"],
                 "additionalProperties": False,
             },
         },
@@ -136,14 +136,76 @@ def generate_search_parameters(question: str, llm_client: Any) -> SearchGenerati
             for item in searches:
                 validate_search_payload(item)
 
-            alternatives = payload.get("alternatives") or []
-            if not isinstance(alternatives, list):
-                raise ValueError("alternatives must be a list")
+            alternatives = _clean_alternatives(payload.get("alternatives"))
+            enriched_alternatives = _ensure_intent_keywords(question, alternatives)
 
-            return SearchGenerationResult(searches=searches, alternatives=list(alternatives))
+            return SearchGenerationResult(searches=searches, alternatives=enriched_alternatives)
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if attempts >= 2:
                 raise ValueError(str(exc))
 
     raise ValueError(str(last_error) if last_error else "unknown error")
+
+
+def _clean_alternatives(raw: Any) -> list[str]:
+    if raw is None:
+        raise ValueError("alternatives missing")
+    if not isinstance(raw, list):
+        raise ValueError("alternatives must be a list")
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for alt in raw:
+        if not isinstance(alt, str):
+            raise ValueError("alternatives must contain strings")
+        stripped = alt.strip()
+        if not stripped:
+            continue
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+        cleaned.append(stripped)
+
+    if len(cleaned) < 2:
+        raise ValueError("alternatives must contain at least two non-empty strings")
+
+    return cleaned
+
+
+_INTENT_KEYWORDS = ("設計", "デザイン", "design")
+
+
+def _ensure_intent_keywords(question: str, alternatives: list[str]) -> list[str]:
+    """Ensure at least one alternative retains design-related intent words."""
+
+    lower_question = question.lower()
+    intent_present = any(kw.lower() in lower_question for kw in _INTENT_KEYWORDS)
+
+    if not intent_present:
+        return alternatives
+
+    has_keyword = any(
+        kw.lower() in alt.lower()
+        for alt in alternatives
+        for kw in _INTENT_KEYWORDS
+    )
+    if has_keyword:
+        return alternatives
+
+    # Prepend the original question to preserve intent while keeping order stable.
+    fallback = question.strip() or _INTENT_KEYWORDS[0]
+    enriched = [fallback, *alternatives]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for alt in enriched:
+        if alt in seen:
+            continue
+        seen.add(alt)
+        deduped.append(alt)
+
+    if len(deduped) < 2:
+        raise ValueError("alternatives must contain at least two non-empty strings")
+
+    return deduped

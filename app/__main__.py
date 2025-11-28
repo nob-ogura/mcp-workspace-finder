@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping
+from typing import Any, Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -31,6 +32,7 @@ from app.logging_utils import (
     set_debug_logging,
 )
 from app.progress_display import ProgressDisplay
+from app.llm_search import generate_search_parameters, SearchGenerationResult
 
 app = typer.Typer(
     add_completion=False,
@@ -370,12 +372,39 @@ def run_oneshot(
     *,
     force_mock: bool,
     config_path: Path | None = None,
+    llm_client: Any | None = None,
+    search_runner: Callable[[list[dict[str, Any]]], list[Any]] | None = None,
 ) -> None:
     """Execute a single query non-interactively then exit."""
     normalized_query = (query or "").strip()
     ProgressDisplay(console).run(ONESHOT_PROGRESS_STEPS, delay=0.02)
 
-    console.print(f"[bold green]Result:[/] {normalized_query}")
+    generation = _generate_with_fallback(normalized_query, llm_client)
+    runner = search_runner or (lambda searches: [normalized_query] if normalized_query else ["result"])
+    search_results = runner(generation.searches)
+
+    if not search_results:
+        _render_alternatives_only(generation.alternatives)
+        return
+
+    console.print("[bold green]Result:[/]")
+    for item in search_results:
+        console.print(f"- {item}")
+
+
+def _generate_with_fallback(query: str, llm_client: Any | None) -> SearchGenerationResult:
+    if llm_client is not None:
+        return generate_search_parameters(query, llm_client)
+
+    base = query or "workspace"
+    alternatives = [base, f"{base} 資料"]
+    return SearchGenerationResult(searches=[], alternatives=alternatives)
+
+
+def _render_alternatives_only(alternatives: list[str]) -> None:
+    console.print("[yellow]No results found. Try these alternative queries:[/]")
+    for alt in alternatives:
+        console.print(f"- {alt}")
 
 
 @app.callback()

@@ -69,3 +69,32 @@ def test_schema_violation_triggers_retry_and_error():
         generate_search_parameters("foo", client)
 
     assert len(client.calls) == 2
+
+
+def test_alternatives_must_be_two_or_more_non_empty():
+    bad_payload = {
+        "searches": [{"service": "slack", "query": "design", "max_results": 2}],
+        "alternatives": ["only-one", ""],
+    }
+    good_payload = {
+        "searches": [{"service": "slack", "query": "design", "max_results": 2}],
+        "alternatives": ["design doc", "design review"],
+    }
+    client = DummyClient([make_response(bad_payload), make_response(good_payload)])
+
+    result = generate_search_parameters("設計に関する質問", client)
+
+    assert len(client.calls) == 2  # retry once after rejecting bad alternatives
+    assert result.alternatives == good_payload["alternatives"]
+
+
+def test_alternatives_preserve_design_intent():
+    payload = {
+        "searches": [{"service": "github", "query": "repo:org/private", "max_results": 1}],
+        "alternatives": ["private repo docs", "internal documentation"],
+    }
+    client = DummyClient([make_response(payload)])
+
+    result = generate_search_parameters("非公開リポジトリの設計資料", client)
+
+    assert any("設計" in alt or "デザイン" in alt for alt in result.alternatives)
