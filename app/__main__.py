@@ -22,6 +22,7 @@ from app.config import (
 from app.process import launch_services_async, monitor_services
 from app.status_display import emit_new_warnings, render_status_table
 from app.smoke import format_result_line, run_smoke_checks, write_report
+from app.logging_utils import install_log_masking
 
 app = typer.Typer(
     add_completion=False,
@@ -39,6 +40,7 @@ MONITOR_WINDOW = 0.8
 
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
+install_log_masking()
 
 
 def real_smoke_enabled(force_mock: bool, allow_real_env: str | bool | None = None) -> bool:
