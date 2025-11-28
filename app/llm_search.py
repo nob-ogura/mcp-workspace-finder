@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from app.schema_validation import validate_search_payload
+from app.logging_utils import mask_sensitive_text
+
+logger = logging.getLogger(__name__)
+
+_SENSITIVE_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "SLACK_USER_TOKEN",
+    "GITHUB_TOKEN",
+    "DRIVE_TOKEN_PATH",
+    "GOOGLE_API_KEY",
+    "GOOGLE_CREDENTIALS_PATH",
+)
 
 MODEL_NAME = "gpt-4o-mini"
 DEFAULT_TEMPERATURE = 0.25
@@ -77,6 +91,26 @@ class SearchGenerationResult:
     alternatives: list[str]
 
 
+def _redact_env_values(text: str) -> str:
+    redacted = text
+    for name in _SENSITIVE_ENV_VARS:
+        value = os.getenv(name)
+        if value:
+            redacted = redacted.replace(value, "[redacted]")
+    return redacted
+
+
+def _safe_debug(prefix: str, payload: Any) -> None:
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        serialized = str(payload)
+    cleaned = mask_sensitive_text(_redact_env_values(serialized))
+    logger.debug("%s %s", prefix, cleaned)
+
+
 def _extract_function_arguments(response: Mapping[str, Any]) -> dict[str, Any]:
     # Direct format used in tests
     if "function_call" in response:
@@ -115,6 +149,17 @@ def generate_search_parameters(question: str, llm_client: Any) -> SearchGenerati
         {"role": "user", "content": question},
     ]
 
+    _safe_debug(
+        "LLM request",
+        {
+            "messages": messages,
+            "model": MODEL_NAME,
+            "temperature": DEFAULT_TEMPERATURE,
+            "timeout": REQUEST_TIMEOUT,
+            "max_retries": MAX_RETRIES,
+        },
+    )
+
     attempts = 0
     last_error: Exception | None = None
     while attempts < 2:
@@ -127,6 +172,8 @@ def generate_search_parameters(question: str, llm_client: Any) -> SearchGenerati
             max_retries=MAX_RETRIES,
             tools=TOOLS,
         )
+
+        _safe_debug("LLM response", response)
 
         try:
             payload = _extract_function_arguments(response)
