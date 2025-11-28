@@ -6,6 +6,7 @@ from typing import Callable
 
 import pytest
 
+import app.__main__ as main_module
 from app.config import RunMode, load_server_definitions, resolve_service_modes
 from app.__main__ import repl_loop, show_startup_status
 
@@ -335,6 +336,99 @@ def test_show_startup_status_uses_spinner(mocker):
     args, _ = status.call_args
     assert "slack=mock" in args[0]
     sleep.assert_called_once_with(0.1)
+
+
+def test_dotenv_loaded_when_real_and_allow_real(monkeypatch, tmp_path, mocker, capsys):
+    monkeypatch.chdir(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text("GITHUB_TOKEN=from_env\n")
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+        """,
+    )
+
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    loader = mocker.spy(main_module, "load_dotenv")
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    loader.assert_called_once_with(dotenv_path=env_path)
+    out = capsys.readouterr().out
+    assert ".env loaded" in out
+
+
+def test_dotenv_loads_when_allow_real_in_dotenv(monkeypatch, tmp_path, mocker, capsys):
+    monkeypatch.chdir(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text("ALLOW_REAL=1\nGITHUB_TOKEN=from_env\n")
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+        """,
+    )
+
+    monkeypatch.delenv("ALLOW_REAL", raising=False)
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    loader = mocker.spy(main_module, "load_dotenv")
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    loader.assert_called_once_with(dotenv_path=env_path)
+    out = capsys.readouterr().out
+    assert "real smoke enabled" in out
+
+
+def test_dotenv_skipped_when_force_mock(monkeypatch, tmp_path, mocker, capsys):
+    monkeypatch.chdir(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text("GITHUB_TOKEN=from_env\n")
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+        """,
+    )
+
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    loader = mocker.patch("app.__main__.load_dotenv")
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=True, config_path=config_path, start_services=False)
+
+    loader.assert_not_called()
+    out = capsys.readouterr().out
+    assert ".env loaded" not in out
 
 
 def test_auth_files_present_allow_real(monkeypatch, tmp_path, capsys):

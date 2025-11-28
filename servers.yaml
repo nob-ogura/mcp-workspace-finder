@@ -5,11 +5,13 @@ services:
   slack:
     mode: real  # real | mock (default real)
     kind: binary  # Go binary from korotovsky/slack-mcp-server
-    exec: /path/to/slack-mcp-server
+    exec: ~/go/bin/slack-mcp-server
     args: []
     workdir: .
     env:
-      SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+      # slack-mcp-server expects SLACK_MCP_XOXP_TOKEN (User OAuth token).
+      # We map it from SLACK_USER_TOKEN defined in .env for backward compatibility.
+      SLACK_MCP_XOXP_TOKEN: ${SLACK_USER_TOKEN}
     auth_files:
       - path: secrets/slack_token.json
         description: Cache file if the server persists tokens locally.
@@ -22,12 +24,12 @@ services:
 
   github:
     mode: real  # real | mock
-    kind: python  # github/github-mcp-server
-    exec: python
+    kind: node  # @modelcontextprotocol/server-github (Node)
+    exec: npx
     args:
-      - -m
-      - github_mcp_server
-    workdir: /path/to/github-mcp-server
+      - -y
+      - "@modelcontextprotocol/server-github"
+    workdir: .
     env:
       GITHUB_TOKEN: ${GITHUB_TOKEN}
     auth_files:

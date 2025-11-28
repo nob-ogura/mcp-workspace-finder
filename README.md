@@ -11,8 +11,49 @@ Google Drive、Slack、GitHub を Model Context Protocol (MCP) 経由で横断�
 1. このリポジトリを clone し、ディレクトリに移動する。
 2. Poetry で Python 3.10+ を使うよう設定する（例: `poetry env use python3.10`）。
 3. 依存関係をインストール: `poetry install`。
-4. 環境ファイルを作成: `cp .env.example .env`。少なくとも `OPENAI_API_KEY`, `SLACK_USER_TOKEN`, `GITHUB_TOKEN`, `DRIVE_TOKEN_PATH`（OAuth トークンファイルへのパス）を記入。秘密情報はローカルに保持し、`.env` と `token.json` は gitignore 済み。
-5. トークンや認証ファイルのパスがデフォルトと異なる場合、またはモックモードを使う場合は `servers.yaml` で MCP サーバーのエンドポイントを調整する。
+4. 環境ファイルを作成: `cp .env.example .env`。少なくとも `OPENAI_API_KEY`, `SLACK_USER_TOKEN`, `GITHUB_TOKEN`, `DRIVE_TOKEN_PATH`（OAuth トークンファイルへのパス）を記入。秘密情報はローカルに保持し、`.env` と `token.json` は gitignore 済み。`.env` は **ファイルが存在** し、`--mock` 未指定、`ALLOW_REAL=1`、`servers.yaml` で `mode: real` が含まれる場合にだけ起動時に自動読み込みされます。
+5. MCP サーバー（Slack/GitHub/Drive）の導入と `servers.yaml` の設定を行う（詳細は「MCP サーバーのインストール」を参照）。トークンや認証ファイルのパスがデフォルトと異なる場合も `servers.yaml` を調整する。
+
+## MCP サーバーのインストール
+CLI は各サービスごとに独立した MCP サーバーを子プロセスとして起動します。以下のいずれかの方法でサーバーを用意し、`servers.yaml` でパスを指し示してください。
+
+### Slack MCP Server (Go 製)
+1. Go 1.21 以上を用意。未導入なら macOS では `brew install go`、Ubuntu では `sudo apt-get install golang` などで入れる。`go version` で 1.21 以上を確認し、必要なら `export PATH="$(go env GOPATH)/bin:$PATH"` を `~/.zshrc` などに追記して `~/go/bin` を PATH に通す。
+2. インストール: `go install github.com/korotovsky/slack-mcp-server/cmd/slack-mcp-server@latest`  
+3. バイナリの場所を確認: `$(go env GOPATH)/bin/slack-mcp-server`（通常は `~/go/bin`）。GitHub Releases から取得した場合は配置したバイナリの絶対パスを控える。
+4. `servers.yaml` の `slack.exec` に上記パスを設定する。
+
+### GitHub MCP Server (TypeScript 製)
+1. Node.js 18+ を用意。
+2. 推奨: npx で最新を実行  
+   `npx -y @modelcontextprotocol/server-github`  
+   - `pip install github-mcp-server` のような PyPI パッケージは存在しないため、npm 経由で取得してください。
+3. 定期利用で高速起動したい場合はグローバルインストール  
+   `npm install -g @modelcontextprotocol/server-github` で `mcp-server-github` が入るので、`servers.yaml` の `github.exec` に `mcp-server-github`（または絶対パス）を指定する。
+4. 認証: PAT を `GITHUB_TOKEN` として環境変数に渡す（この CLI も `GITHUB_TOKEN` を参照します）。`servers.yaml` で `env:` に設定する。
+5. 例: `servers.yaml` で npx を使う場合  
+   ```yaml
+   github:
+     exec: npx
+     args:
+       - -y
+       - "@modelcontextprotocol/server-github"
+     env:
+       GITHUB_TOKEN: ${GITHUB_TOKEN}
+   ```
+
+### Google Drive MCP Server (Node 製)
+1. Node.js 18+ を用意。
+2. 実行方法は 2 通り:
+   - グローバルインストール: `npm install -g @modelcontextprotocol/server-gdrive` の後、`servers.yaml` で `exec: server-gdrive` とする。
+   - npx 実行（推奨・更新追従が容易）: `servers.yaml` を下記のように設定する。
+     ```yaml
+     exec: npx
+     args:
+       - -y
+       - "@modelcontextprotocol/server-gdrive"
+     ```
+3. 初回起動前に OAuth フローで `token.json` を作成する必要があります。`GDRIVE_OAUTH_PATH=$GOOGLE_CREDENTIALS_PATH GDRIVE_CREDENTIALS_PATH=$DRIVE_TOKEN_PATH npx -y @modelcontextprotocol/server-gdrive auth` を実行し、ブラウザで許可後に保存された `secrets/token.json` を `DRIVE_TOKEN_PATH` として参照します。
 
 ## 実環境用の通信情報の取得手順
 `ALLOW_REAL=1` かつ `--mock` 未指定で最小スモーク（検索 API が成功するかの手動確認）を行うために、各サービスと通信できる実トークン/認証情報を準備します。取得後は `.env` と `servers.yaml` に反映し、ファイルはローカルのみで管理してください。
@@ -42,7 +83,7 @@ Google Drive、Slack、GitHub を Model Context Protocol (MCP) 経由で横断�
   - 実キーがない場合は警告のうえ自動でモックにフォールバックします。
 - ヘルプ / 非対話モード: `poetry run python -m app --help`。
 - モックを強制する: `poetry run python -m app --mock`。
-- 実 API 呼び出しを許可する: 環境変数 `ALLOW_REAL=1` を設定（`--mock` 指定時はモックが優先）。
+- 実 API 呼び出しを許可する: 環境変数 `ALLOW_REAL=1` を設定（`--mock` 指定時はモックが優先）。この状態で `servers.yaml` に `mode: real` が含まれ、`.env` が存在すれば起動時に `.env` を読み込み、環境変数を補完します。それ以外のケースでは `.env` は読み込みません。
 
 ### フェーズ3: 実環境スモーク（受入基準）手順まとめ
 起動時に Slack/GitHub/Drive が real になり、ログに 1 回だけ `real smoke enabled` が出ることを確認するための手順です。
@@ -79,6 +120,21 @@ Google Drive、Slack、GitHub を Model Context Protocol (MCP) 経由で横断�
 6) トラブルシュート
 - Slack/GitHub が mock になる: `secrets/slack_token.json`, `secrets/github_token.json` の存在・パーミッションを確認。空ファイルで可。
 - Drive が timeout する: 事前インストールするか、`READINESS_TIMEOUT` を一時的に延長して初回ダウンロードを待つ。
+
+### 実環境検索スモークの実行方法（タスク3）
+実鍵で 3 サービスの検索 Tool を 1 回ずつ叩くスモークを CLI で実行できます。Slack では DM/Private を 1 件以上含むヒットが必須です。
+
+1. 前提を満たす  
+   - `ALLOW_REAL=1` を設定し、`--mock` は付けない。  
+   - `.env` と `servers.yaml` が実鍵モードになるよう整備されていること。  
+   - GitHub で検索対象となるリポジトリを `GITHUB_SMOKE_REPO=owner/repo` で指定する。  
+   - 任意: 検索キーワードを変えたい場合は `SLACK_SMOKE_QUERY` / `GITHUB_SMOKE_QUERY` / `DRIVE_SMOKE_QUERY` を設定する。
+2. 実行  
+   - 直接実行: `poetry run python -m app smoke --report reports/smoke.json`  
+   - またはラッパー: `ALLOW_REAL=1 scripts/smoke_real.sh --report reports/smoke.json`
+3. 結果確認  
+   - 成功時は `real smoke passed` が表示され、レポートに各サービスの `status: ok` と Slack の `dm_hit: true` が残ります。  
+   - 失敗時は `real smoke failed` とともに理由が表示され、レポートに失敗理由が記録されます。結果ファイルは日付付きで JSON に保存するので、そのまま共有に利用できます。
 
 ## ノート
 - トークン／認証情報はローカルに保持し、`.env`、`token.json`、`secrets/` 配下はコミットしないこと。

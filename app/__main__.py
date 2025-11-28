@@ -5,14 +5,23 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from dotenv import load_dotenv, dotenv_values
 
-from app.config import RunMode, load_server_definitions, mode_summary, resolve_service_modes
+from app.config import (
+    RunMode,
+    ServerDefinition,
+    load_server_definitions,
+    mode_summary,
+    resolve_service_modes,
+)
 from app.process import launch_services_async, monitor_services
 from app.status_display import emit_new_warnings, render_status_table
+from app.smoke import format_result_line, run_smoke_checks, write_report
 
 app = typer.Typer(
     add_completion=False,
@@ -25,7 +34,7 @@ app = typer.Typer(
 )
 
 console = Console()
-READINESS_TIMEOUT = 3.0
+READINESS_TIMEOUT = 15.0
 MONITOR_WINDOW = 0.8
 
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
@@ -40,6 +49,65 @@ def real_smoke_enabled(force_mock: bool, allow_real_env: str | bool | None = Non
     if isinstance(flag, bool):
         return flag
     return flag == "1"
+
+
+def _determine_env_path(config_path: Path | None, env_path: Path | None = None) -> Path:
+    if env_path:
+        return env_path.resolve()
+    if config_path:
+        return Path(config_path).resolve().parent / ".env"
+    return (Path.cwd() / ".env").resolve()
+
+
+def should_load_dotenv(
+    force_mock: bool,
+    definitions: Mapping[str, "ServerDefinition"],
+    *,
+    config_path: Path | None = None,
+    env_path: Path | None = None,
+    allow_real_env: str | None = None,
+) -> bool:
+    """Return True when .env should be loaded for real mode."""
+
+    path = _determine_env_path(config_path, env_path)
+    if not path.exists():
+        return False
+    if force_mock:
+        return False
+
+    allow_real = os.getenv("ALLOW_REAL") if allow_real_env is None else allow_real_env
+    if allow_real != "1":
+        allow_from_file = dotenv_values(path).get("ALLOW_REAL")
+        if allow_from_file != "1":
+            return False
+
+    has_real_mode = any(definition.declared_mode is RunMode.REAL for definition in definitions.values())
+    return has_real_mode
+
+
+def maybe_load_dotenv(
+    force_mock: bool,
+    definitions: Mapping[str, "ServerDefinition"],
+    *,
+    config_path: Path | None = None,
+    env_path: Path | None = None,
+) -> bool:
+    """Load .env when running real mode with explicit opt-in.
+
+    Conditions:
+    - .env exists
+    - --mock is not provided
+    - ALLOW_REAL=1 is set in the environment
+    - servers.yaml contains at least one service with mode=real
+    """
+
+    path = _determine_env_path(config_path, env_path)
+    if not should_load_dotenv(force_mock, definitions, config_path=config_path, env_path=path):
+        return False
+
+    load_dotenv(dotenv_path=path)
+    console.print(f"[green].env loaded[/] ({path})")
+    return True
 
 
 def show_startup_status(mode_summary_text: str) -> None:
@@ -104,6 +172,7 @@ def repl_loop(
 ) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
     definitions = load_server_definitions(config_path)
+    _ = maybe_load_dotenv(force_mock, definitions, config_path=config_path)
     smoke_enabled = real_smoke_enabled(force_mock)
     console.print(
         "[green]real smoke enabled[/]"
@@ -200,6 +269,61 @@ def repl(
 ):
     """Explicitly start the REPL even when invoked as a subcommand."""
     repl_loop(force_mock=mock)
+
+
+@app.command()
+def smoke(
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Force mock mode; skips real credential validation.",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to servers.yaml. Defaults to repo root servers.yaml.",
+    ),
+    report: Path | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help="Optional JSON report output path.",
+    ),
+):
+    """Run real-mode smoke searches for Slack/GitHub/Drive."""
+    definitions = load_server_definitions(config)
+    _ = maybe_load_dotenv(mock, definitions, config_path=config)
+
+    if not real_smoke_enabled(mock):
+        console.print("[yellow]real smoke skipped (mock mode)[/]")
+        raise typer.Exit(code=0)
+
+    resolved = resolve_service_modes(definitions, force_mock=mock, allow_real=True)
+    not_real = [name for name, decision in resolved.items() if decision.selected_mode is not RunMode.REAL]
+    if not_real:
+        console.print(
+            "[yellow]real smoke skipped (not all services real: "
+            + ", ".join(not_real)
+            + ")[/]"
+        )
+        raise typer.Exit(code=1)
+
+    results = run_smoke_checks(resolved)
+    for result in results.values():
+        color = "green" if result.ok else "red"
+        console.print(f"[{color}]{format_result_line(result)}[/]")
+
+    if report:
+        write_report(report, results)
+        console.print(f"Report written to {report}")
+
+    if all(result.ok for result in results.values()):
+        console.print("[green]real smoke passed[/]")
+        raise typer.Exit(code=0)
+
+    console.print("[red]real smoke failed[/]")
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
