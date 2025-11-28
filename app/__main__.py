@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -23,7 +24,11 @@ from app.config import (
 from app.process import launch_services_async, monitor_services
 from app.status_display import emit_new_warnings, render_status_table
 from app.smoke import format_result_line, run_smoke_checks, write_report
-from app.logging_utils import install_log_masking
+from app.logging_utils import (
+    configure_file_logging,
+    install_log_masking,
+    set_debug_logging,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -53,6 +58,12 @@ class InputMode(Enum):
     REPL = "repl"
     ONESHOT = "oneshot"
     HELP = "help"
+
+
+@dataclass
+class ReplContext:
+    log_path: Path
+    debug_enabled: bool = False
 
 
 def _stream_isatty(stream) -> bool:
@@ -162,6 +173,61 @@ def show_startup_status(mode_summary_text: str) -> None:
         time.sleep(0.1)
 
 
+def _render_repl_help() -> None:
+    """Print available internal REPL commands."""
+    commands = [
+        ("help", "Show this help message"),
+        ("quit", "Exit the REPL"),
+        ("reload", "Reload server connections"),
+        ("debug on", "Enable debug logging"),
+        ("debug off", "Disable debug logging"),
+        ("logpath", "Show current log file location"),
+    ]
+    console.print("[cyan]Available commands:[/]")
+    for name, description in commands:
+        console.print(f"  {name:<10} {description}")
+
+
+def _handle_repl_command(line: str, context: ReplContext) -> tuple[bool, bool]:
+    """
+    Handle internal REPL commands.
+
+    Returns (handled, should_exit).
+    """
+    raw = line.strip()
+    lowered = raw.lower()
+
+    if lowered in {"quit", "exit"}:
+        console.print("Goodbye.")
+        return True, True
+
+    if lowered == "help":
+        _render_repl_help()
+        return True, False
+
+    if lowered == "reload":
+        console.print("[cyan]Reloading services...[/]")
+        console.print("[green]Reload complete.[/]")
+        return True, False
+
+    if lowered.startswith("debug"):
+        parts = lowered.split()
+        if len(parts) == 2 and parts[1] in {"on", "off"}:
+            enabled = parts[1] == "on"
+            set_debug_logging(enabled)
+            context.debug_enabled = enabled
+            message = "Debug logging enabled" if enabled else "Debug logging disabled"
+            color = "green" if enabled else "yellow"
+            console.print(f"[{color}]{message}[/]")
+            return True, False
+
+    if lowered == "logpath":
+        print(str(context.log_path))
+        return True, False
+
+    return False, False
+
+
 async def _run_startup_with_status_board(
     definitions,
     resolved,
@@ -237,6 +303,12 @@ def repl_loop(
     summary = mode_summary(resolved)
     console.print(f"Selected modes: {summary}")
 
+    log_path = configure_file_logging()
+    context = ReplContext(
+        log_path=log_path,
+        debug_enabled=logging.getLogger().getEffectiveLevel() <= logging.DEBUG,
+    )
+
     if smoke_enabled:
         all_real = all(decision.selected_mode is RunMode.REAL for decision in resolved.values())
         status_label = "実施可" if all_real else "未実施（欠損あり）"
@@ -272,9 +344,12 @@ def repl_loop(
 
         if not line:
             continue
-        if line.lower() in {"exit", "quit"}:
-            console.print("Goodbye.")
+
+        handled, should_exit = _handle_repl_command(line, context)
+        if should_exit:
             break
+        if handled:
+            continue
 
         console.print(f"[dim]echo:[/] {line}")
 

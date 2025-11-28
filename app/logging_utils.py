@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Iterable
 
 _TOKEN_PATTERN = re.compile(r"([A-Za-z0-9]{4})([A-Za-z0-9_\-]{6,})")
 _EMAIL_PATTERN = re.compile(r"([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 _DOMAIN_PATTERN = re.compile(r"(?<!\*)\b([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\b")
+
+LOG_DIR_ENV = "MCP_LOG_DIR"
+LOG_FILENAME = "workspace-finder.log"
 
 
 def _mask_domain_value(domain: str) -> str:
@@ -74,3 +79,33 @@ def install_log_masking() -> None:
         fmt = formatter._style._fmt if formatter else "%(levelname)s:%(name)s:%(message)s"  # type: ignore[attr-defined]
         datefmt = formatter.datefmt if formatter else None
         handler.setFormatter(MaskingFormatter(fmt, datefmt=datefmt))
+
+
+def default_log_path() -> Path:
+    """Return the default log file path, honoring MCP_LOG_DIR when set."""
+    base = Path(os.getenv(LOG_DIR_ENV, Path.cwd() / "logs"))
+    return (base / LOG_FILENAME).resolve()
+
+
+def configure_file_logging(log_path: Path | None = None) -> Path:
+    """Attach a masked file handler to the root logger if not already present."""
+    target = (log_path or default_log_path()).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.touch(exist_ok=True)
+
+    root = logging.getLogger()
+    for handler in _current_handlers():
+        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == target:
+            return target
+
+    file_handler = logging.FileHandler(target, encoding="utf-8")
+    formatter = MaskingFormatter("%(asctime)s %(levelname)s:%(name)s:%(message)s")
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+    return target
+
+
+def set_debug_logging(enabled: bool) -> None:
+    """Toggle root logger level between DEBUG and WARNING."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if enabled else logging.WARNING)
