@@ -38,6 +38,11 @@ app = typer.Typer(
 console = Console()
 READINESS_TIMEOUT = 15.0
 MONITOR_WINDOW = 0.8
+ONESHOT_PROGRESS_STEPS: tuple[str, ...] = (
+    "Preparing query...",
+    "Searching sources...",
+    "Summarizing...",
+)
 
 # Emit warnings/errors once to stderr so startup issues are visible in CLI
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
@@ -274,14 +279,26 @@ def repl_loop(
         console.print(f"[dim]echo:[/] {line}")
 
 
+def _render_progress(steps: tuple[str, ...], *, delay: float = 0.0) -> None:
+    """Render simple, deterministic progress messages for one-shot flow."""
+    for label in steps:
+        console.print(f"[cyan]{label}[/]")
+        if delay > 0:
+            time.sleep(delay)
+
+
 def run_oneshot(
     query: str,
     *,
     force_mock: bool,
     config_path: Path | None = None,
 ) -> None:
-    """Placeholder one-shot execution path; will be extended in later tasks."""
-    console.print(f"[bold cyan]one-shot mode[/] query: {query}")
+    """Execute a single query non-interactively then exit."""
+    normalized_query = (query or "").strip()
+
+    _render_progress(ONESHOT_PROGRESS_STEPS, delay=0.02)
+
+    console.print(f"[bold green]Result:[/] {normalized_query}")
 
 
 @app.callback()
