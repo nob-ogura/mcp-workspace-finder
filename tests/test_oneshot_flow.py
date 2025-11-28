@@ -51,3 +51,23 @@ def test_oneshot_with_stdin_shows_progress_and_exits(monkeypatch):
     assert "Google Driveの設計資料" in output
     assert output.count("Result") == 1
     assert "mcp>" not in output
+
+
+def test_oneshot_uses_progress_display(monkeypatch):
+    _force_tty(monkeypatch)
+
+    calls = []
+
+    class FakeProgress:
+        def __init__(self, console):
+            self.console = console
+
+        def run(self, steps, *, delay: float = 0.0):
+            calls.append(tuple(steps))
+
+    monkeypatch.setattr(main_module, "ProgressDisplay", lambda console: FakeProgress(console))
+
+    result = runner.invoke(main_module.app, ["--query", "progress check"])
+
+    assert result.exit_code == 0
+    assert calls == [main_module.ONESHOT_PROGRESS_STEPS]

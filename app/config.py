@@ -157,8 +157,6 @@ def resolve_service_modes(
         selected = RunMode.MOCK
 
         if force_mock:
-            if definition.declared_mode is RunMode.REAL:
-                warning = f"CLI override: forced mock for {name}"
             selected = RunMode.MOCK
         else:
             if allow_real and definition.declared_mode is RunMode.REAL:
@@ -192,6 +190,36 @@ def resolve_service_modes(
         )
 
     return results
+
+
+def cli_override_warning(
+    definitions: Mapping[str, ServerDefinition],
+    *,
+    force_mock: bool,
+    allow_real: bool,
+) -> str | None:
+    """Return a single CLI override warning message, if applicable.
+
+    - `--mock` forces all services to mock regardless of servers.yaml.
+    - Without `ALLOW_REAL=1`, services declared as real are overridden to mock.
+    The warning is emitted once per startup to avoid noisy repeats.
+    """
+
+    real_services = sorted(
+        name for name, definition in definitions.items() if definition.declared_mode is RunMode.REAL
+    )
+    if not real_services:
+        return None
+
+    if force_mock:
+        joined = ", ".join(real_services)
+        return f"CLI override: --mock forces mock mode ({joined})"
+
+    if not allow_real:
+        joined = ", ".join(real_services)
+        return f"CLI override: ALLOW_REAL=1 not set; forcing mock ({joined})"
+
+    return None
 
 
 def mode_summary(resolved: Mapping[str, ResolvedService]) -> str:

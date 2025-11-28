@@ -131,6 +131,50 @@ def test_cli_override_warns_and_forces_mock(monkeypatch, tmp_path, capsys):
     assert "slack=mock" in out
 
 
+def test_cli_override_when_allow_real_disabled(monkeypatch, tmp_path, capsys):
+    config_path = _write_config(
+        tmp_path,
+        """
+        services:
+          slack:
+            mode: real
+            kind: binary
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              SLACK_USER_TOKEN: ${SLACK_USER_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-slack"]
+              workdir: .
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+        """,
+    )
+    monkeypatch.delenv("ALLOW_REAL", raising=False)
+    monkeypatch.setattr("app.__main__.show_startup_status", lambda summary: None)
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["exit"]))
+
+    repl_loop(force_mock=False, config_path=config_path, start_services=False)
+
+    out = capsys.readouterr().out
+    assert out.count("CLI override") == 1
+    assert "slack=mock" in out
+    assert "github=mock" in out
+    assert "鍵不足" not in out
+
+
 def test_allow_real_selects_real_when_keys_present(monkeypatch, tmp_path, capsys):
     config_path = _write_config(
         tmp_path,

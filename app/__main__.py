@@ -18,6 +18,7 @@ from app.config import (
     RunMode,
     ServerDefinition,
     load_server_definitions,
+    cli_override_warning,
     mode_summary,
     resolve_service_modes,
 )
@@ -29,6 +30,7 @@ from app.logging_utils import (
     install_log_masking,
     set_debug_logging,
 )
+from app.progress_display import ProgressDisplay
 
 app = typer.Typer(
     add_completion=False,
@@ -290,6 +292,14 @@ def repl_loop(
         else "[yellow]real smoke skipped (mock mode)[/]"
     )
 
+    override = cli_override_warning(
+        definitions,
+        force_mock=force_mock,
+        allow_real=smoke_enabled,
+    )
+    if override:
+        console.print(f"[yellow]Warning:[/] {override}")
+
     resolved = resolve_service_modes(
         definitions,
         force_mock=force_mock,
@@ -351,15 +361,8 @@ def repl_loop(
         if handled:
             continue
 
+        ProgressDisplay(console).run(ONESHOT_PROGRESS_STEPS, delay=0.0)
         console.print(f"[dim]echo:[/] {line}")
-
-
-def _render_progress(steps: tuple[str, ...], *, delay: float = 0.0) -> None:
-    """Render simple, deterministic progress messages for one-shot flow."""
-    for label in steps:
-        console.print(f"[cyan]{label}[/]")
-        if delay > 0:
-            time.sleep(delay)
 
 
 def run_oneshot(
@@ -370,8 +373,7 @@ def run_oneshot(
 ) -> None:
     """Execute a single query non-interactively then exit."""
     normalized_query = (query or "").strip()
-
-    _render_progress(ONESHOT_PROGRESS_STEPS, delay=0.02)
+    ProgressDisplay(console).run(ONESHOT_PROGRESS_STEPS, delay=0.02)
 
     console.print(f"[bold green]Result:[/] {normalized_query}")
 

@@ -91,3 +91,23 @@ def test_repl_logpath_prints_current_log_file(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     expected = (Path(tmp_path) / "workspace-finder.log").resolve()
     assert str(expected) in out
+
+
+def test_repl_uses_shared_progress_display(monkeypatch, tmp_path):
+    config_path = _write_config(tmp_path)
+    _suppress_startup(monkeypatch)
+    calls = []
+
+    class FakeProgress:
+        def __init__(self, console):
+            self.console = console
+
+        def run(self, steps, *, delay: float = 0.0):
+            calls.append(tuple(steps))
+
+    monkeypatch.setattr(main_module, "ProgressDisplay", lambda console: FakeProgress(console))
+    monkeypatch.setattr(builtins, "input", _iter_inputs(["search term", "quit"]))
+
+    main_module.repl_loop(force_mock=True, config_path=config_path, start_services=False)
+
+    assert calls == [main_module.ONESHOT_PROGRESS_STEPS]
