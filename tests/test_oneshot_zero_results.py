@@ -37,7 +37,11 @@ def test_zero_results_outputs_alternatives_only(monkeypatch):
     monkeypatch.setattr(main_module, "ProgressDisplay", lambda console: SilentProgress(console))
 
     payload = {
-        "searches": [{"service": "slack", "query": "design", "max_results": 1}],
+        "searches": [
+            {"service": "slack", "query": "design", "max_results": 1},
+            {"service": "github", "query": "design", "max_results": 1},
+            {"service": "gdrive", "query": "design", "max_results": 1},
+        ],
         "alternatives": ["設計 ドキュメント", "設計レビュー 議事録"],
     }
 
@@ -71,7 +75,11 @@ def test_zero_results_skips_summary_and_finishes_quickly(monkeypatch):
     monkeypatch.setattr(main_module, "ProgressDisplay", lambda console: SilentProgress(console))
 
     payload = {
-        "searches": [{"service": "slack", "query": "design", "max_results": 1}],
+        "searches": [
+            {"service": "slack", "query": "design", "max_results": 1},
+            {"service": "github", "query": "design", "max_results": 1},
+            {"service": "gdrive", "query": "design", "max_results": 1},
+        ],
         "alternatives": ["設計 ドキュメント", "設計レビュー 議事録"],
     }
 
