@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from app.logging_utils import mask_sensitive_text
 from app.search_pipeline import FetchResult
@@ -164,7 +164,13 @@ def _validate_summary_payload(payload: Mapping[str, Any], expected_count: int) -
     return SummaryResult(markdown=markdown, evidence_count=evidence_count)
 
 
-def summarize_documents(question: str, documents: Sequence[FetchResult], llm_client: Any) -> SummaryResult:
+def summarize_documents(
+    question: str,
+    documents: Sequence[FetchResult],
+    llm_client: Any,
+    *,
+    io_logger: Callable[[dict[str, Any]], None] | None = None,
+) -> SummaryResult:
     """Summarize fetched documents into Markdown with ordered evidence numbers."""
 
     doc_payload = _build_documents_payload(documents)
@@ -182,21 +188,29 @@ def summarize_documents(question: str, documents: Sequence[FetchResult], llm_cli
         {"role": "user", "content": user_content},
     ]
 
-    _safe_debug(
-        "LLM request",
-        {
-            "messages": messages,
-            "model": MODEL_NAME,
-            "temperature": TEMPERATURE,
-            "timeout": REQUEST_TIMEOUT,
-            "max_retries": MAX_RETRIES,
-        },
-    )
+    request_payload = {
+        "messages": messages,
+        "model": MODEL_NAME,
+        "temperature": TEMPERATURE,
+        "timeout": REQUEST_TIMEOUT,
+        "max_retries": MAX_RETRIES,
+    }
+
+    _safe_debug("LLM request", request_payload)
+
+    def _log_io(payload: Mapping[str, Any]) -> None:
+        if io_logger is None:
+            return
+        try:
+            io_logger(dict(payload))
+        except Exception:  # noqa: BLE001
+            logger.debug("failed to emit LLM IO log", exc_info=True)
 
     attempts = 0
     last_error: Exception | None = None
     while attempts < _MAX_ATTEMPTS:
         attempts += 1
+        _log_io({"stage": "summary", "direction": "request", **request_payload})
         response = llm_client.create(
             messages=messages,
             model=MODEL_NAME,
@@ -207,6 +221,7 @@ def summarize_documents(question: str, documents: Sequence[FetchResult], llm_cli
         )
 
         _safe_debug("LLM response", response)
+        _log_io({"stage": "summary", "direction": "response", "response": response})
 
         try:
             payload = _extract_function_arguments(response)
