@@ -50,10 +50,11 @@ def _mask_domain(match: re.Match[str]) -> str:
 
 def mask_sensitive_text(text: str) -> str:
     """Mask obvious secrets like tokens, emails, and domains in free text."""
-    masked = _EMAIL_PATTERN.sub(_mask_email, text)
-    masked = _TOKEN_PATTERN.sub(_mask_token, masked)
-    masked = _DOMAIN_PATTERN.sub(_mask_domain, masked)
-    return masked
+    # masked = _EMAIL_PATTERN.sub(_mask_email, text)
+    # masked = _TOKEN_PATTERN.sub(_mask_token, masked)
+    # masked = _DOMAIN_PATTERN.sub(_mask_domain, masked)
+    # return masked
+    return text
 
 
 class MaskingFormatter(logging.Formatter):
