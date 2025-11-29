@@ -284,6 +284,9 @@ def repl_loop(
     start_services: bool = True,
     readiness_timeout: float = READINESS_TIMEOUT,
     monitor_window: float = MONITOR_WINDOW,
+    llm_client: Any | None = None,
+    search_runner: Callable[[list[dict[str, Any]]], Any] | None = None,
+    summarizer: Callable[[str, list[Any], Any | None], Any] | None = None,
 ) -> None:
     """Minimal REPL that echoes input and stays alive until the user exits."""
     definitions = load_server_definitions(config_path)
@@ -364,8 +367,39 @@ def repl_loop(
         if handled:
             continue
 
-        ProgressDisplay(console).run(ONESHOT_PROGRESS_STEPS, delay=0.0)
-        console.print(f"[dim]echo:[/] {line}")
+        # Reuse one-shot pipeline for actual queries
+        run_oneshot(
+            line,
+            force_mock=force_mock,
+            config_path=config_path,
+            llm_client=llm_client,
+            search_runner=search_runner,
+            summarizer=summarizer,
+        )
+
+
+def _looks_like_fetch_results(items: list[Any]) -> bool:
+    """Heuristic: detect Phase6 fetch results (have service/title/uri/content)."""
+    if not items:
+        return False
+    sample = items[0]
+    return all(hasattr(sample, field) for field in ("service", "title", "uri", "content"))
+
+
+def _render_summary_output(payload: Any, alternatives: list[str]) -> bool:
+    """Render summary + links when a summary-style payload is provided."""
+    if payload is None:
+        return False
+
+    # Support both SearchFetchSummaryResult and SummaryPipelineResult
+    summary_md = getattr(payload, "summary_markdown", None)
+    links = getattr(payload, "links", None)
+
+    if summary_md is None or links is None:
+        return False
+
+    render_summary_with_links(console, summary_md, links, alternatives=alternatives)
+    return True
 
 
 def run_oneshot(
@@ -374,7 +408,7 @@ def run_oneshot(
     force_mock: bool,
     config_path: Path | None = None,
     llm_client: Any | None = None,
-    search_runner: Callable[[list[dict[str, Any]]], list[Any]] | None = None,
+    search_runner: Callable[[list[dict[str, Any]]], Any] | None = None,
     summarizer: Callable[[str, list[Any], Any | None], Any] | None = None,
 ) -> None:
     """Execute a single query non-interactively then exit."""
@@ -385,12 +419,25 @@ def run_oneshot(
     runner = search_runner or (lambda searches: [normalized_query] if normalized_query else ["result"])
     search_results = runner(generation.searches)
 
+    # Runner may already return a summary result (full pipeline)
+    if _render_summary_output(search_results, generation.alternatives):
+        return
+
     if not search_results:
         _render_alternatives_only(generation.alternatives)
         return
 
+    summary_payload = None
     if summarizer is not None:
-        summarizer(normalized_query, search_results, llm_client)
+        summary_payload = summarizer(normalized_query, search_results, llm_client)
+    elif llm_client is not None and isinstance(search_results, list) and _looks_like_fetch_results(search_results):
+        # When fetch results are already available and we have an LLM client, run summary pipeline by default.
+        from app.summary_pipeline import run_summary_pipeline
+
+        summary_payload = run_summary_pipeline(normalized_query, search_results, llm_client)
+
+    if _render_summary_output(summary_payload, generation.alternatives):
+        return
 
     console.print("[bold green]Result:[/]")
     for item in search_results:

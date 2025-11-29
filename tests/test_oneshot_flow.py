@@ -1,4 +1,5 @@
 from typer.testing import CliRunner
+from rich.console import Console
 
 import app.__main__ as main_module
 
@@ -71,3 +72,34 @@ def test_oneshot_uses_progress_display(monkeypatch):
 
     assert result.exit_code == 0
     assert calls == [main_module.ONESHOT_PROGRESS_STEPS]
+
+
+def test_oneshot_renders_summary_with_links(monkeypatch):
+    # capture console output
+    console = Console(record=True, force_terminal=True, color_system=None, width=120)
+    monkeypatch.setattr(main_module, "console", console)
+
+    from app.evidence_links import EvidenceLink
+    from app.summary_pipeline import SummaryPipelineResult
+
+    def summarizer(question, documents, client=None):
+        return SummaryPipelineResult(
+            summary_markdown="## Slack\n- Update [1]",
+            links=[EvidenceLink(number=1, title="Slack thread", service="slack", uri="https://slack.test/1")],
+            warnings=[],
+            used_fallback=False,
+        )
+
+    main_module.run_oneshot(
+        "LLM summary please",
+        force_mock=True,
+        llm_client=None,
+        search_runner=lambda searches: ["dummy"],
+        summarizer=summarizer,
+    )
+
+    out = console.export_text()
+    assert "Slack" in out
+    assert "根拠リンク" in out
+    assert "[1] Slack thread (slack)" in out
+    assert "Result:" not in out
