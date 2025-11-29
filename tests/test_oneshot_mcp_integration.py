@@ -119,6 +119,148 @@ class TestStdioMcpClient:
         # Verify response was parsed
         assert result == [{"text": "test result"}]
 
+    @pytest.mark.anyio
+    async def test_read_resource_returns_text_content(self):
+        """read_resource should return text content from resources/read response."""
+        import json as json_module
+
+        mock_process = MagicMock()
+        write_calls = []
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.write = lambda data: write_calls.append(data)
+
+        async def mock_drain():
+            pass
+
+        mock_process.stdin.drain = mock_drain
+
+        # First: initialize, Second: resources/read with text content
+        responses = [
+            '{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}\n',
+            '{"jsonrpc": "2.0", "id": 2, "result": {"contents": [{"uri": "gdrive:///file123", "text": "File content here", "mimeType": "text/plain"}]}}\n',
+        ]
+        response_iter = iter(responses)
+
+        async def mock_readline():
+            return next(response_iter).encode()
+
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
+
+        client = StdioMcpClient(mock_process, "test-service")
+        result = await client.read_resource("gdrive:///file123")
+
+        # Verify requests were sent
+        assert len(write_calls) == 2
+
+        # Check resources/read request
+        read_request = json_module.loads(write_calls[1].decode())
+        assert read_request["method"] == "resources/read"
+        assert read_request["params"]["uri"] == "gdrive:///file123"
+
+        # Verify text content was returned
+        assert result == "File content here"
+
+    @pytest.mark.anyio
+    async def test_read_resource_decodes_blob_content(self):
+        """read_resource should decode base64 blob content."""
+        import base64
+
+        mock_process = MagicMock()
+        write_calls = []
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.write = lambda data: write_calls.append(data)
+
+        async def mock_drain():
+            pass
+
+        mock_process.stdin.drain = mock_drain
+
+        # Base64 encoded "Binary file content"
+        blob_content = base64.b64encode(b"Binary file content").decode()
+        responses = [
+            '{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}\n',
+            f'{{"jsonrpc": "2.0", "id": 2, "result": {{"contents": [{{"uri": "gdrive:///file123", "blob": "{blob_content}", "mimeType": "application/octet-stream"}}]}}}}\n',
+        ]
+        response_iter = iter(responses)
+
+        async def mock_readline():
+            return next(response_iter).encode()
+
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
+
+        client = StdioMcpClient(mock_process, "test-service")
+        result = await client.read_resource("gdrive:///file123")
+
+        assert result == "Binary file content"
+
+    @pytest.mark.anyio
+    async def test_read_resource_raises_error_on_empty_contents(self):
+        """read_resource should raise McpClientError when contents is empty."""
+        from app.mcp_runners import McpClientError
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.write = lambda data: None
+
+        async def mock_drain():
+            pass
+
+        mock_process.stdin.drain = mock_drain
+
+        responses = [
+            '{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}\n',
+            '{"jsonrpc": "2.0", "id": 2, "result": {"contents": []}}\n',
+        ]
+        response_iter = iter(responses)
+
+        async def mock_readline():
+            return next(response_iter).encode()
+
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
+
+        client = StdioMcpClient(mock_process, "test-service")
+
+        with pytest.raises(McpClientError) as exc_info:
+            await client.read_resource("gdrive:///file123")
+
+        assert "empty contents" in str(exc_info.value)
+
+    @pytest.mark.anyio
+    async def test_read_resource_raises_error_on_server_error(self):
+        """read_resource should raise McpClientError when server returns error."""
+        from app.mcp_runners import McpClientError
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.write = lambda data: None
+
+        async def mock_drain():
+            pass
+
+        mock_process.stdin.drain = mock_drain
+
+        responses = [
+            '{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}\n',
+            '{"jsonrpc": "2.0", "id": 2, "error": {"code": -32602, "message": "Resource not found"}}\n',
+        ]
+        response_iter = iter(responses)
+
+        async def mock_readline():
+            return next(response_iter).encode()
+
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
+
+        client = StdioMcpClient(mock_process, "test-service")
+
+        with pytest.raises(McpClientError) as exc_info:
+            await client.read_resource("gdrive:///nonexistent")
+
+        assert "Resource not found" in str(exc_info.value)
+
 
 class TestMcpRunnersFromProcesses:
     """Test creating runners from MCP server processes."""
@@ -143,13 +285,90 @@ class TestMcpRunnersFromProcesses:
         assert "gdrive" in search_runners
 
         # Verify fetch runners are created with qualified names
-        # Note: gdrive uses resources, not tools, so no fetch runner
         assert "slack" in fetch_runners
         assert "slack.conversations_replies" in fetch_runners
         assert "github" in fetch_runners
         assert "github.get_issue" in fetch_runners
-        # gdrive doesn't have a fetch tool (uses resources instead)
-        assert "gdrive" not in fetch_runners
+        # gdrive uses read_resource (resource-based fetch)
+        assert "gdrive" in fetch_runners
+        assert "gdrive.__read_resource__" in fetch_runners
+
+
+class TestFetchRunnerWithReadResource:
+    """Test fetch runner using read_resource for resource-based services."""
+
+    @pytest.mark.anyio
+    async def test_fetch_runner_with_none_tool_uses_read_resource(self):
+        """Fetch runner with tool_name=None should use read_resource."""
+        from app.mcp_runners import create_fetch_runner, McpClientError
+        from app.search_pipeline import SearchResult
+
+        mock_process = MagicMock()
+        write_calls = []
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.write = lambda data: write_calls.append(data)
+
+        async def mock_drain():
+            pass
+
+        mock_process.stdin.drain = mock_drain
+
+        responses = [
+            '{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}\n',
+            '{"jsonrpc": "2.0", "id": 2, "result": {"contents": [{"uri": "gdrive:///file123", "text": "Document content from Drive"}]}}\n',
+        ]
+        response_iter = iter(responses)
+
+        async def mock_readline():
+            return next(response_iter).encode()
+
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readline = mock_readline
+
+        client = StdioMcpClient(mock_process, "gdrive")
+        fetch_runner = create_fetch_runner(client, "gdrive", None)
+
+        # Create a SearchResult with fetch_params containing URI
+        search_result = SearchResult(
+            service="gdrive",
+            title="Design Document",
+            snippet="Project design overview",
+            uri="https://drive.google.com/file/d/file123",
+            kind="document",
+            fetch_tool=None,
+            fetch_params={"uri": "gdrive:///file123"},
+        )
+
+        content = await fetch_runner(search_result)
+
+        assert content == "Document content from Drive"
+
+    @pytest.mark.anyio
+    async def test_fetch_runner_with_none_tool_raises_error_without_uri(self):
+        """Fetch runner with tool_name=None should raise error if uri missing."""
+        from app.mcp_runners import create_fetch_runner, McpClientError
+        from app.search_pipeline import SearchResult
+
+        mock_process = MagicMock()
+
+        client = StdioMcpClient(mock_process, "gdrive")
+        fetch_runner = create_fetch_runner(client, "gdrive", None)
+
+        # Create a SearchResult without URI in fetch_params
+        search_result = SearchResult(
+            service="gdrive",
+            title="Design Document",
+            snippet="Project design overview",
+            uri="https://drive.google.com/file/d/file123",
+            kind="document",
+            fetch_tool=None,
+            fetch_params={},  # Missing uri
+        )
+
+        with pytest.raises(McpClientError) as exc_info:
+            await fetch_runner(search_result)
+
+        assert "missing 'uri'" in str(exc_info.value)
 
 
 class TestOneshotMcpIntegration:

@@ -66,20 +66,19 @@ async def test_search_and_fetch_execute_in_parallel():
             "slack.conversations_replies": delayed_fetch,
             "github": delayed_fetch,
             "github.get_issue": delayed_fetch,
-            # Don't include gdrive.resource to test skip behavior
+            # gdrive uses read_resource
+            "gdrive": delayed_fetch,
+            "gdrive.__read_resource__": delayed_fetch,
         },
     )
     elapsed = time.perf_counter() - start
 
     assert elapsed < 0.4
-    # GDrive uses skip fetch (snippet as content), so check all services have docs
+    # All services should have docs
     assert {doc.service for doc in output.documents} == set(SERVICES)
-    # Slack and GitHub get fetched content, GDrive uses snippet (via skip)
+    # All services get fetched content
     for doc in output.documents:
-        if doc.service in ("slack", "github"):
-            assert doc.content.startswith("content for")
-        else:
-            assert doc.content == "preview"  # snippet used as content for gdrive (skip)
+        assert doc.content.startswith("content for")
 
 
 @pytest.mark.anyio("asyncio")
@@ -115,14 +114,16 @@ async def test_fetch_failure_does_not_block_other_services():
         fetch_runners={
             "slack": ok_fetch,
             "slack.conversations_replies": ok_fetch,
-            # gdrive uses skip, no fetch runner needed
+            # gdrive uses read_resource
+            "gdrive": ok_fetch,
+            "gdrive.__read_resource__": ok_fetch,
             "github": failing_fetch,
             "github.get_issue": failing_fetch,
         },
     )
 
     services = {doc.service for doc in output.documents}
-    # slack and gdrive succeed (gdrive via skip), github fails
+    # slack and gdrive succeed, github fails
     assert services == {"slack", "gdrive"}
     assert any("github" in warning.lower() for warning in output.warnings)
 

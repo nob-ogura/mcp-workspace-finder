@@ -7,6 +7,7 @@ by search_pipeline.py.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Any, Mapping
@@ -152,6 +153,55 @@ class StdioMcpClient:
                 return result.get("content", [])
             return result
 
+    async def read_resource(self, uri: str) -> str:
+        """Read a resource from the MCP server using resources/read.
+
+        Args:
+            uri: The resource URI (e.g., "gdrive:///file_id")
+
+        Returns:
+            The resource content as a string
+
+        Raises:
+            McpClientError: If the request fails or returns invalid data
+        """
+        # Ensure initialized before reading resources
+        if not self._initialized:
+            await self.initialize()
+
+        async with self._lock:
+            result = await self._send_request(
+                "resources/read",
+                {"uri": uri},
+            )
+
+            # Extract content from result
+            # MCP resources/read returns: { contents: [{ uri, text?, blob?, mimeType? }] }
+            if not isinstance(result, dict):
+                raise McpClientError(f"{self._name}: invalid resources/read response format")
+
+            contents = result.get("contents")
+            if not contents or not isinstance(contents, list) or len(contents) == 0:
+                raise McpClientError(f"{self._name}: empty contents in resources/read response")
+
+            first_content = contents[0]
+            if not isinstance(first_content, dict):
+                raise McpClientError(f"{self._name}: invalid content item in resources/read response")
+
+            # Try text first, then blob (base64 encoded)
+            if "text" in first_content:
+                return first_content["text"]
+            elif "blob" in first_content:
+                try:
+                    decoded = base64.b64decode(first_content["blob"])
+                    return decoded.decode("utf-8")
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise McpClientError(f"{self._name}: failed to decode blob content: {exc}")
+            else:
+                raise McpClientError(
+                    f"{self._name}: resources/read response has neither 'text' nor 'blob'"
+                )
+
 
 def _parse_slack_csv_results(csv_text: str, max_results: int = 3) -> list[Mapping[str, Any]]:
     """Parse CSV results from korotovsky/slack-mcp-server.
@@ -264,14 +314,15 @@ def create_search_runner(
 def create_fetch_runner(
     client: StdioMcpClient,
     service: str,
-    tool_name: str,
+    tool_name: str | None,
 ) -> Any:
     """Create a fetch runner function for the given MCP client and service.
 
     Args:
         client: The MCP client to use for communication
         service: Service name (slack, github, gdrive)
-        tool_name: The tool name to call for fetch (e.g., "get_message")
+        tool_name: The tool name to call for fetch (e.g., "get_message").
+            If None, the runner will use read_resource with the URI from fetch_params.
 
     Returns:
         An async function that takes a SearchResult and returns content
@@ -279,6 +330,16 @@ def create_fetch_runner(
 
     async def fetch_runner(result: SearchResult) -> Any:
         try:
+            # If tool_name is None, use read_resource with the URI
+            if tool_name is None:
+                uri = result.fetch_params.get("uri")
+                if not uri:
+                    raise McpClientError(
+                        f"{service}: fetch_params missing 'uri' for read_resource"
+                    )
+                return await client.read_resource(uri)
+
+            # Otherwise, use the tool call
             content = await client.call_tool(
                 tool_name,
                 result.fetch_params,
@@ -365,15 +426,33 @@ async def create_mcp_runners_from_processes(
                 search_runners[raw_service] = runner
 
         # Add fetch runners with both simple and qualified names
-        fetch_tool = FETCH_TOOLS.get(service) or FETCH_TOOLS.get(raw_service)
-        if fetch_tool:
+        # Check if service has a fetch tool defined (can be None for resource-based fetch)
+        if service in FETCH_TOOLS or raw_service in FETCH_TOOLS:
+            fetch_tool = FETCH_TOOLS.get(service, FETCH_TOOLS.get(raw_service))
             runner = create_fetch_runner(client, service, fetch_tool)
             fetch_runners[service] = runner
-            fetch_runners[f"{service}.{fetch_tool}"] = runner
+            if fetch_tool:
+                fetch_runners[f"{service}.{fetch_tool}"] = runner
+            else:
+                # For resource-based fetch (tool_name=None), register with special name
+                fetch_runners[f"{service}.__read_resource__"] = runner
+            
+            # Always register a __read_resource__ runner for services that support it
+            # This allows code search results to be fetched via resources/read
+            if fetch_tool is not None:
+                # Create a separate runner for read_resource
+                resource_runner = create_fetch_runner(client, service, None)
+                fetch_runners[f"{service}.__read_resource__"] = resource_runner
+                if raw_service != service:
+                    fetch_runners[f"{raw_service}.__read_resource__"] = resource_runner
+            
             # Also register under original name for compatibility
             if raw_service != service:
                 fetch_runners[raw_service] = runner
-                fetch_runners[f"{raw_service}.{fetch_tool}"] = runner
+                if fetch_tool:
+                    fetch_runners[f"{raw_service}.{fetch_tool}"] = runner
+                else:
+                    fetch_runners[f"{raw_service}.__read_resource__"] = runner
 
     return search_runners, fetch_runners
 

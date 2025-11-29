@@ -102,9 +102,16 @@ def _build_payloads() -> Iterable[dict]:
 def _build_runners(responders: dict[str, FakeResponder]):
     search_runners = {name: responder.search for name, responder in responders.items()}
     fetch_runners = {
-        "slack.get_message": responders["slack"].fetch,
+        # Slack fetch runner
+        "slack": responders["slack"].fetch,
+        "slack.conversations_replies": responders["slack"].fetch,
+        # GitHub fetch runners (get_issue for issues, __read_resource__ for code)
+        "github": responders["github"].fetch,
         "github.get_issue": responders["github"].fetch,
-        "gdrive.read_resource": responders["gdrive"].fetch,
+        "github.__read_resource__": responders["github"].fetch,
+        # GDrive uses read_resource
+        "gdrive": responders["gdrive"].fetch,
+        "gdrive.__read_resource__": responders["gdrive"].fetch,
     }
     return search_runners, fetch_runners
 

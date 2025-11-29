@@ -47,9 +47,9 @@ def test_mapping_adds_fetch_params_per_service():
     assert github.fetch_params["issue_number"] == 1
 
     gdrive = mapped[2]
-    # GDrive uses resources (not tools), so fetch is skipped
-    assert gdrive.fetch_tool == "gdrive.skip"
-    assert gdrive.fetch_params == {}
+    # GDrive uses resources via read_resource
+    assert gdrive.fetch_tool == "gdrive.__read_resource__"
+    assert gdrive.fetch_params == {"uri": "gdrive:///file123"}
 
 
 def test_mapping_enforces_max_results_per_service():

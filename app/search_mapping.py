@@ -87,13 +87,20 @@ def _build_fetch_info(item: Mapping[str, Any]) -> tuple[str, dict[str, Any], str
                     "issue_number": issue_number,
                 }, kind
         
-        # For code search results, the snippet already contains relevant info
-        # Skip fetch since parsing owner/repo from search_code results is complex
+        # For code search results, use read_resource to fetch file contents
+        # URI from search results can be used to read the file via MCP resources protocol
+        uri = item.get("uri", "")
+        if uri:
+            return "github.__read_resource__", {"uri": uri}, kind
+        # Fallback: skip if no URI available
         return "github.skip", {}, kind
 
     if service == "gdrive":
-        # GDrive MCP server uses resources (gdrive:///<file_id>), not tools
-        # Skip fetch and use snippet as content since resource reading requires MCP resources protocol
+        # GDrive MCP server uses resources (gdrive:///<file_id>) via MCP resources protocol
+        uri = item.get("uri", "")
+        if uri:
+            return "gdrive.__read_resource__", {"uri": uri}, item.get("kind", "file")
+        # Fallback: skip if no URI available
         return "gdrive.skip", {}, item.get("kind", "file")
 
     raise ValueError(f"unsupported service: {service}")

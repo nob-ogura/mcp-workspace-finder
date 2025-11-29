@@ -82,8 +82,10 @@ def _build_runners(responders: dict[str, FakeMcpResponder]):
         "slack.conversations_replies": responders["slack"].fetch,
         "github": responders["github"].fetch,
         "github.get_issue": responders["github"].fetch,
-        # gdrive uses skip, no fetch runner needed (but include for test)
+        "github.__read_resource__": responders["github"].fetch,
+        # gdrive uses read_resource
         "gdrive": responders["gdrive"].fetch,
+        "gdrive.__read_resource__": responders["gdrive"].fetch,
     }
     return search_runners, fetch_runners
 
@@ -106,12 +108,9 @@ async def test_mock_servers_return_documents_within_cap():
 
     counts = Counter(doc.service for doc in output.documents)
     assert counts == {name: MAX_RESULTS_PER_SERVICE for name in SERVICES}
-    # slack and github get fetched content, gdrive uses snippet (via skip)
+    # All services now get fetched content via their respective fetch runners
     for doc in output.documents:
-        if doc.service in ("slack", "github"):
-            assert doc.content.startswith(doc.service)
-        else:
-            assert doc.content == "preview"  # gdrive uses snippet via skip
+        assert doc.content.startswith(doc.service)
     assert output.warnings == []
 
 
