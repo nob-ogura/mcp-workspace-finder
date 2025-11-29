@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+import textwrap
+from pathlib import Path
 
 import pytest
 
-from app.search_pipeline import run_search_and_fetch_pipeline
+from app.config import RunMode, load_server_definitions
+from app.search_pipeline import prepare_mode_aware_runners, run_search_and_fetch_pipeline
 
 
 SERVICES = ("slack", "github", "gdrive")
@@ -18,6 +21,12 @@ def anyio_backend():
 
 def _build_search_payloads():
     return [{"service": service, "query": f"{service} query", "max_results": 3} for service in SERVICES]
+
+
+def _write_config(tmp_path: Path, yaml_text: str):
+    path = tmp_path / "servers.yaml"
+    path.write_text(textwrap.dedent(yaml_text))
+    return load_server_definitions(path)
 
 
 @pytest.mark.anyio("asyncio")
@@ -189,3 +198,167 @@ async def test_transient_fetch_retried_once_with_backoff(caplog):
     assert elapsed >= 0.5  # backoff applied
     assert elapsed < 2.0
     assert any("retry" in warning.lower() for warning in output.warnings)
+
+
+@pytest.mark.anyio("asyncio")
+async def test_cli_override_forces_mock_mode_and_logs(monkeypatch, tmp_path, caplog):
+    caplog.set_level("WARNING")
+
+    definitions = _write_config(
+        tmp_path,
+        """
+        services:
+          gdrive:
+            mode: real
+            kind: node
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
+            mock:
+              exec: /bin/echo
+              args: ["mock-drive"]
+              workdir: .
+        """,
+    )
+
+    monkeypatch.setenv("ALLOW_REAL", "1")
+
+    real_calls: list[str] = []
+    mock_calls: list[str] = []
+    fetch_calls: list[tuple[str, str]] = []
+
+    async def real_search(params):
+        real_calls.append(params["service"])
+        return [
+            {
+                "service": params["service"],
+                "title": "t",
+                "snippet": "",
+                "uri": "uri1",
+            }
+        ]
+
+    async def mock_search(params):
+        mock_calls.append(params["service"])
+        return [
+            {
+                "service": params["service"],
+                "title": "t",
+                "snippet": "",
+                "uri": "uri1",
+            }
+        ]
+
+    async def real_fetch(result):
+        fetch_calls.append(("real", result.service))
+        return "real-content"
+
+    async def mock_fetch(result):
+        fetch_calls.append(("mock", result.service))
+        return "mock-content"
+
+    prepared = prepare_mode_aware_runners(
+        definitions,
+        force_mock=True,
+        search_runners_real={"gdrive": real_search},
+        search_runners_mock={"gdrive": mock_search},
+        fetch_runners_real={"gdrive.read_resource": real_fetch},
+        fetch_runners_mock={"gdrive.read_resource": mock_fetch},
+    )
+
+    output = await run_search_and_fetch_pipeline(
+        [{"service": "gdrive", "query": "design"}],
+        search_runners=prepared.search_runners,
+        fetch_runners=prepared.fetch_runners,
+        initial_warnings=prepared.warnings,
+    )
+
+    assert prepared.resolved_services["gdrive"].selected_mode is RunMode.MOCK
+    assert not real_calls
+    assert mock_calls == ["gdrive"]
+    assert fetch_calls == [("mock", "gdrive")]
+    assert any("CLI override" in warning for warning in output.warnings)
+    assert any("CLI override" in record.message for record in caplog.records)
+
+
+@pytest.mark.anyio("asyncio")
+async def test_allow_real_prefers_real_without_override(monkeypatch, tmp_path, caplog):
+    caplog.set_level("WARNING")
+
+    definitions = _write_config(
+        tmp_path,
+        """
+        services:
+          github:
+            mode: real
+            kind: python
+            exec: /bin/echo
+            args: []
+            workdir: .
+            env:
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
+            mock:
+              exec: /bin/echo
+              args: ["mock-github"]
+              workdir: .
+        """,
+    )
+
+    monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("GITHUB_TOKEN", "token-present")
+
+    real_calls: list[str] = []
+    mock_calls: list[str] = []
+
+    async def real_search(params):
+        real_calls.append(params["service"])
+        return [
+            {
+                "service": params["service"],
+                "title": "t",
+                "snippet": "",
+                "uri": "uri1",
+            }
+        ]
+
+    async def mock_search(params):
+        mock_calls.append(params["service"])
+        return [
+            {
+                "service": params["service"],
+                "title": "t",
+                "snippet": "",
+                "uri": "uri1",
+            }
+        ]
+
+    async def real_fetch(result):
+        return "real-content"
+
+    async def mock_fetch(result):
+        return "mock-content"
+
+    prepared = prepare_mode_aware_runners(
+        definitions,
+        force_mock=False,
+        search_runners_real={"github": real_search},
+        search_runners_mock={"github": mock_search},
+        fetch_runners_real={"github.get_issue": real_fetch, "github": real_fetch},
+        fetch_runners_mock={"github.get_issue": mock_fetch, "github": mock_fetch},
+    )
+
+    output = await run_search_and_fetch_pipeline(
+        [{"service": "github", "query": "design"}],
+        search_runners=prepared.search_runners,
+        fetch_runners=prepared.fetch_runners,
+        initial_warnings=prepared.warnings,
+    )
+
+    assert prepared.resolved_services["github"].selected_mode is RunMode.REAL
+    assert real_calls == ["github"]
+    assert not mock_calls
+    assert output.documents and output.documents[0].content == "real-content"
+    assert not any("CLI override" in warning for warning in output.warnings)
+    assert all("CLI override" not in record.message for record in caplog.records)
