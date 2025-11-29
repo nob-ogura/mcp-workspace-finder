@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -20,10 +21,23 @@ _SENSITIVE_ENV_VARS = (
     "GOOGLE_CREDENTIALS_PATH",
 )
 
-MODEL_NAME = "gpt-4o-mini"
+# Environment variable for GitHub search scope (owner/repo or org)
+_GITHUB_SEARCH_SCOPE_VAR = "GITHUB_SEARCH_SCOPE"
+_GITHUB_SMOKE_REPO_VAR = "GITHUB_SMOKE_REPO"
+
+DEFAULT_MODEL_NAME = "gpt-4o-mini"
 DEFAULT_TEMPERATURE = 0.25
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 1
+
+
+def _get_model_name() -> str:
+    """Get model name from environment variable or use default.
+    
+    Environment variable: OPENAI_MODEL
+    Default: gpt-4o-mini
+    """
+    return os.getenv("OPENAI_MODEL") or DEFAULT_MODEL_NAME
 
 SYSTEM_PROMPT = """
 You are an assistant that generates search parameters for Slack, GitHub, and Google Drive.
@@ -47,6 +61,7 @@ TOOLS = [
                 "properties": {
                     "searches": {
                         "type": "array",
+                        "description": "One search query per service. You MUST include exactly 3 items: one for slack, one for github, and one for gdrive.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -68,7 +83,7 @@ TOOLS = [
                             "required": ["service", "query"],
                             "additionalProperties": True,
                         },
-                        "minItems": 1,
+                        "minItems": 3,
                         "maxItems": 3,
                     },
                     "alternatives": {
@@ -149,11 +164,12 @@ def generate_search_parameters(question: str, llm_client: Any) -> SearchGenerati
         {"role": "user", "content": question},
     ]
 
+    model_name = _get_model_name()
     _safe_debug(
         "LLM request",
         {
             "messages": messages,
-            "model": MODEL_NAME,
+            "model": model_name,
             "temperature": DEFAULT_TEMPERATURE,
             "timeout": REQUEST_TIMEOUT,
             "max_retries": MAX_RETRIES,
@@ -166,7 +182,7 @@ def generate_search_parameters(question: str, llm_client: Any) -> SearchGenerati
         attempts += 1
         response = llm_client.create(
             messages=messages,
-            model=MODEL_NAME,
+            model=model_name,
             temperature=DEFAULT_TEMPERATURE,
             timeout=REQUEST_TIMEOUT,
             max_retries=MAX_RETRIES,
@@ -182,6 +198,16 @@ def generate_search_parameters(question: str, llm_client: Any) -> SearchGenerati
                 raise ValueError("searches must be a list")
             for item in searches:
                 validate_search_payload(item)
+
+            # Validate that all three services are present
+            services_found = {s.get("service") for s in searches}
+            required_services = {"slack", "github", "gdrive"}
+            missing = required_services - services_found
+            if missing:
+                raise ValueError(f"searches missing required services: {', '.join(sorted(missing))}")
+
+            # Apply GitHub search scope if configured
+            searches = _apply_github_search_scope(searches)
 
             alternatives = _clean_alternatives(payload.get("alternatives"))
             enriched_alternatives = _ensure_intent_keywords(question, alternatives)
@@ -221,6 +247,55 @@ def _clean_alternatives(raw: Any) -> list[str]:
 
 
 _INTENT_KEYWORDS = ("設計", "デザイン", "design")
+
+
+def _get_github_search_scope() -> str | None:
+    """Get GitHub search scope from environment variables.
+
+    Checks GITHUB_SEARCH_SCOPE first, then falls back to GITHUB_SMOKE_REPO.
+    Returns the value if set, or None if not configured.
+    """
+    scope = os.getenv(_GITHUB_SEARCH_SCOPE_VAR) or os.getenv(_GITHUB_SMOKE_REPO_VAR)
+    return scope.strip() if scope else None
+
+
+def _apply_github_search_scope(searches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply GitHub search scope (repo: or org:) to GitHub search queries.
+
+    If GITHUB_SEARCH_SCOPE or GITHUB_SMOKE_REPO is set, ensures the GitHub
+    search queries include the appropriate repo: or org: filter.
+    """
+    scope = _get_github_search_scope()
+    if not scope:
+        return searches
+
+    # Determine if scope is org-only or owner/repo
+    if "/" in scope:
+        # owner/repo format -> use repo: filter
+        scope_filter = f"repo:{scope}"
+    else:
+        # org-only format -> use org: filter
+        scope_filter = f"org:{scope}"
+
+    updated: list[dict[str, Any]] = []
+    for search in searches:
+        if search.get("service") != "github":
+            updated.append(search)
+            continue
+
+        query = search.get("query", "")
+
+        # Skip if query already has repo: or org: filter
+        if re.search(r"\b(repo:|org:)", query, re.IGNORECASE):
+            updated.append(search)
+            continue
+
+        # Append scope filter to query
+        new_query = f"{query} {scope_filter}".strip()
+        updated.append({**search, "query": new_query})
+        logger.debug("Applied GitHub scope: %s -> %s", query, new_query)
+
+    return updated
 
 
 def _ensure_intent_keywords(question: str, alternatives: list[str]) -> list[str]:

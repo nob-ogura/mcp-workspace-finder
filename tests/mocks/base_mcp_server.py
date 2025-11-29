@@ -52,6 +52,14 @@ class BaseMcpServer(ABC):
         """Handle a tools/call request. Override in subclasses."""
         pass
 
+    def handle_read_resource(self, uri: str) -> dict[str, Any]:
+        """Handle a resources/read request. Override in subclasses if needed.
+        
+        Returns a dict with 'contents' key containing list of content items.
+        Each content item should have 'uri' and either 'text' or 'blob'.
+        """
+        raise NotImplementedError(f"resources/read not implemented for {self.name}")
+
     def _process_request(self, line: str) -> None:
         """Process a single JSON-RPC request."""
         try:
@@ -72,6 +80,15 @@ class BaseMcpServer(ABC):
                 self._send_response(request_id, {"content": result})
             except Exception as e:
                 self._send_error(request_id, -32000, str(e))
+        elif method == "resources/read":
+            uri = params.get("uri", "")
+            try:
+                result = self.handle_read_resource(uri)
+                self._send_response(request_id, result)
+            except NotImplementedError as e:
+                self._send_error(request_id, -32601, str(e))
+            except Exception as e:
+                self._send_error(request_id, -32000, str(e))
         elif method == "tools/list":
             # Return list of available tools
             self._send_response(request_id, {"tools": self.list_tools()})
@@ -80,7 +97,7 @@ class BaseMcpServer(ABC):
             self._send_response(request_id, {
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {"name": self.name, "version": "1.0.0"},
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}},
             })
         else:
             self._send_error(request_id, -32601, f"Method not found: {method}")

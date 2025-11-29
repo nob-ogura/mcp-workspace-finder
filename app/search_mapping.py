@@ -87,23 +87,58 @@ def _build_fetch_info(item: Mapping[str, Any]) -> tuple[str, dict[str, Any], str
                     "issue_number": issue_number,
                 }, kind
         
-        # For code search results, use read_resource to fetch file contents
-        # URI from search results can be used to read the file via MCP resources protocol
-        uri = item.get("uri", "")
-        if uri:
-            return "github.__read_resource__", {"uri": uri}, kind
-        # Fallback: skip if no URI available
+        # For code search results, use get_file_contents tool
+        # The GitHub MCP server doesn't support resources/read, only tools
+        owner = item.get("owner", "")
+        repo = item.get("repo", "")
+        path = item.get("path", "")
+        if owner and repo and path:
+            return "github.get_file_contents", {
+                "owner": owner,
+                "repo": repo,
+                "path": path,
+            }, kind
+        # Fallback: skip if required parameters are missing
         return "github.skip", {}, kind
 
     if service == "gdrive":
         # GDrive MCP server uses resources (gdrive:///<file_id>) via MCP resources protocol
+        # Note: The real GDrive MCP server's search results only include filename and mimeType
+        # in text format, without file IDs. In this case, we construct a search URL for display
+        # but cannot fetch the actual content. Only fetch if we have a valid gdrive:// URI.
         uri = item.get("uri", "")
-        if uri:
+        # Accept both gdrive:// and gdrive:/// formats (resource URIs, not HTTP URLs)
+        if uri and uri.startswith("gdrive://"):
             return "gdrive.__read_resource__", {"uri": uri}, item.get("kind", "file")
-        # Fallback: skip if no URI available
+        # Skip fetching if no valid gdrive:// URI available (e.g., when using HTTP search URL)
         return "gdrive.skip", {}, item.get("kind", "file")
 
     raise ValueError(f"unsupported service: {service}")
+
+
+def _get_display_uri(item: Mapping[str, Any]) -> str:
+    """Get the user-facing display URI for a search result.
+
+    For GDrive, prefer webViewLink (the actual Google Docs/Drive URL) over
+    the internal gdrive:/// URI used for fetching content.
+    For other services, use the standard uri field.
+    """
+    service = item.get("service")
+    if service == "gdrive":
+        # Prefer webViewLink for display (user-friendly URL)
+        return (
+            item.get("webViewLink")
+            or item.get("uri")
+            or ""
+        )
+    # For other services, use standard priority
+    return (
+        item.get("uri")
+        or item.get("url")
+        or item.get("html_url")
+        or item.get("permalink")
+        or ""
+    )
 
 
 def map_search_results(raw_results: Iterable[Mapping[str, Any]]) -> list[SearchResult]:
@@ -126,7 +161,7 @@ def map_search_results(raw_results: Iterable[Mapping[str, Any]]) -> list[SearchR
             kind=kind,
             title=item.get("title", ""),
             snippet=item.get("snippet", ""),
-            uri=item.get("uri", ""),
+            uri=_get_display_uri(item),
             fetch_tool=fetch_tool,
             fetch_params=fetch_params,
         )

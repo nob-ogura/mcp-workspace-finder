@@ -11,28 +11,42 @@ from app.search_pipeline import FetchResult
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "gpt-4o-mini"
+DEFAULT_MODEL_NAME = "gpt-4o-mini"
 TEMPERATURE = 0.3
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 1
 _MAX_ATTEMPTS = 2  # initial + 1 retry on schema issues
 
+
+def _get_model_name() -> str:
+    """Get model name from environment variable or use default.
+    
+    Environment variable: OPENAI_MODEL
+    Default: gpt-4o-mini
+    """
+    return os.getenv("OPENAI_MODEL") or DEFAULT_MODEL_NAME
+
 SYSTEM_PROMPT = """
 You are a summarization assistant. Produce concise Markdown grouped by service.
+You MUST output all bullet point text in Japanese. Only service headings (Slack, GitHub, Drive) remain in English.
+
+CRITICAL RULES:
+- You MUST reference ALL provided documents. Every document must appear in the summary.
+- evidence_count MUST equal the total number of documents provided.
 
 Formatting rules:
 - Create a section per service that has documents. Use headings like "## Slack", "## GitHub", "## Drive".
 - Under each heading, add bullet points that capture the key facts. Keep bullets short.
-- Attach evidence numbers in square brackets matching the order of the provided documents: first document = [1], second = [2], etc. Do not skip or reorder numbers.
+- Place evidence numbers in square brackets AT THE END of each bullet, matching the order of the provided documents: first document = [1], second = [2], etc. Do not skip or reorder numbers.
 - If a service has no documents, omit that section. Do not invent content.
 
-Example structure:
+Example structure (if documents from all 3 services are provided):
 ## Slack
-- [1] Decision or finding
+- 決定事項や発見内容 [1]
 ## GitHub
-- [2] PR/issue summary
+- PR/issueの要約 [2]
 ## Drive
-- [3] Document highlights
+- ドキュメントのハイライト [3]
 """.strip()
 
 TOOLS = [
@@ -158,8 +172,14 @@ def _validate_summary_payload(payload: Mapping[str, Any], expected_count: int) -
     if not isinstance(evidence_count, int) or evidence_count < 0:
         raise ValueError("evidence_count must be a non-negative integer")
 
-    if evidence_count != expected_count:
-        raise ValueError(f"evidence_count mismatch: expected {expected_count}, got {evidence_count}")
+    if evidence_count > expected_count:
+        raise ValueError(f"evidence_count exceeds documents: expected at most {expected_count}, got {evidence_count}")
+    if evidence_count < expected_count:
+        # Require at least 70% of documents to be cited, otherwise retry
+        min_required = max(1, int(expected_count * 0.7))
+        if evidence_count < min_required:
+            raise ValueError(f"evidence_count ({evidence_count}) is too low: expected at least {min_required} out of {expected_count} documents")
+        logger.warning("evidence_count (%d) is less than documents (%d); some documents may not be cited", evidence_count, expected_count)
 
     return SummaryResult(markdown=markdown, evidence_count=evidence_count)
 
@@ -188,9 +208,10 @@ def summarize_documents(
         {"role": "user", "content": user_content},
     ]
 
+    model_name = _get_model_name()
     request_payload = {
         "messages": messages,
-        "model": MODEL_NAME,
+        "model": model_name,
         "temperature": TEMPERATURE,
         "timeout": REQUEST_TIMEOUT,
         "max_retries": MAX_RETRIES,
@@ -213,7 +234,7 @@ def summarize_documents(
         _log_io({"stage": "summary", "direction": "request", **request_payload})
         response = llm_client.create(
             messages=messages,
-            model=MODEL_NAME,
+            model=model_name,
             temperature=TEMPERATURE,
             timeout=REQUEST_TIMEOUT,
             max_retries=MAX_RETRIES,

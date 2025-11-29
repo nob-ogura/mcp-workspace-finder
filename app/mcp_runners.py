@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from typing import Any, Mapping
 
 from app.config import load_server_definitions, resolve_service_modes
@@ -203,14 +204,250 @@ class StdioMcpClient:
                 )
 
 
+def _parse_github_code_results(json_text: str, max_results: int = 3) -> list[Mapping[str, Any]]:
+    """Parse JSON results from @modelcontextprotocol/server-github search_code.
+
+    The real GitHub MCP server returns a text response containing JSON with format:
+    {"total_count": N, "items": [{"name": "...", "html_url": "...", ...}, ...]}
+    """
+    results = []
+    try:
+        data = json.loads(json_text)
+        items = data.get("items", [])
+        for item in items[:max_results]:
+            repo = item.get("repository", {})
+            repo_name = repo.get("full_name", "")
+            file_name = item.get("name", "")
+            file_path = item.get("path", "")
+            html_url = item.get("html_url", "")
+
+            title = f"{repo_name}: {file_path}" if repo_name else file_name
+            results.append({
+                "service": "github",
+                "title": title,
+                "snippet": f"File: {file_path}",
+                "uri": html_url,
+                "kind": "code",
+                "owner": repo.get("owner", {}).get("login", ""),
+                "repo": repo.get("name", ""),
+                "path": file_path,
+            })
+    except Exception as exc:
+        logger.warning("Failed to parse GitHub code JSON: %s", exc)
+
+    return results
+
+
+def _parse_github_issues_results(json_text: str, max_results: int = 3) -> list[Mapping[str, Any]]:
+    """Parse JSON results from @modelcontextprotocol/server-github search_issues.
+
+    The real GitHub MCP server returns a text response containing JSON with format:
+    {"total_count": N, "items": [{"title": "...", "html_url": "...", "number": N, ...}, ...]}
+    """
+    results = []
+    try:
+        data = json.loads(json_text)
+        items = data.get("items", [])
+        for item in items[:max_results]:
+            html_url = item.get("html_url", "")
+            title = item.get("title", "")
+            number = item.get("number", 0)
+            body = item.get("body", "") or ""
+            state = item.get("state", "open")
+            is_pr = "pull_request" in item
+
+            # Extract owner/repo from html_url
+            # Format: https://github.com/owner/repo/issues/123
+            import re
+            match = re.search(r"github\.com/([^/]+)/([^/]+)/(?:issues|pull)/(\d+)", html_url)
+            owner = match.group(1) if match else ""
+            repo = match.group(2) if match else ""
+
+            kind = "pr" if is_pr else "issue"
+            results.append({
+                "service": "github",
+                "title": f"#{number} {title}",
+                "snippet": body[:200] if body else f"{kind.upper()} ({state})",
+                "uri": html_url,
+                "kind": kind,
+                "owner": owner,
+                "repo": repo,
+                "issue_number": number,
+            })
+    except Exception as exc:
+        logger.warning("Failed to parse GitHub issues JSON: %s", exc)
+
+    return results
+
+
+def _parse_github_json_results(json_text: str, max_results: int = 3) -> list[Mapping[str, Any]]:
+    """Parse JSON results from GitHub MCP server (auto-detect code vs issues format)."""
+    try:
+        data = json.loads(json_text)
+        items = data.get("items", [])
+        if not items:
+            return []
+
+        # Detect format by checking first item's structure
+        first_item = items[0]
+        if "path" in first_item or "repository" in first_item:
+            # Code search result
+            return _parse_github_code_results(json_text, max_results)
+        elif "number" in first_item or "pull_request" in first_item:
+            # Issue/PR search result
+            return _parse_github_issues_results(json_text, max_results)
+        else:
+            # Fallback to code parser
+            return _parse_github_code_results(json_text, max_results)
+    except Exception as exc:
+        logger.warning("Failed to parse GitHub JSON: %s", exc)
+        return []
+
+
+def _get_drive_service():
+    """Create Google Drive API service using stored credentials.
+
+    Returns:
+        Google Drive service object or None if credentials are unavailable.
+    """
+    try:
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        token_path = os.getenv("DRIVE_TOKEN_PATH")
+        if not token_path or not os.path.exists(token_path):
+            logger.debug("DRIVE_TOKEN_PATH not set or file not found")
+            return None
+
+        with open(token_path) as f:
+            token_data = json.load(f)
+
+        creds = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+        )
+
+        return build("drive", "v3", credentials=creds)
+
+    except Exception as exc:
+        logger.debug("Failed to create Drive service: %s", exc)
+        return None
+
+
+def _get_webviewlink_from_drive_api(filename: str) -> str | None:
+    """Get webViewLink for a file by name using Google Drive API.
+
+    Args:
+        filename: The exact filename to search for.
+
+    Returns:
+        The webViewLink URL if found, None otherwise.
+    """
+    try:
+        service = _get_drive_service()
+        if not service:
+            return None
+
+        # Search for the file by exact name
+        # Escape single quotes in filename for the query
+        escaped_name = filename.replace("'", "\\'")
+        query = f"name = '{escaped_name}'"
+
+        results = service.files().list(
+            q=query,
+            fields="files(id, name, webViewLink)",
+            pageSize=1,
+        ).execute()
+
+        files = results.get("files", [])
+        if files:
+            web_view_link = files[0].get("webViewLink")
+            if web_view_link:
+                logger.debug("Found webViewLink for '%s': %s", filename, web_view_link)
+                return web_view_link
+
+    except Exception as exc:
+        logger.debug("Failed to get webViewLink from Drive API: %s", exc)
+
+    return None
+
+
+def _parse_gdrive_text_results(text: str, max_results: int = 3) -> list[Mapping[str, Any]]:
+    """Parse text results from @modelcontextprotocol/server-gdrive search.
+
+    The real GDrive MCP server returns a text response like:
+    "Found 10 files:\nファイル名 (mimeType)\n..."
+
+    This function tries to get the actual webViewLink using Google Drive API.
+    If that fails, it falls back to constructing a search URL.
+    """
+    import re
+    from urllib.parse import quote
+
+    results = []
+    try:
+        # Skip the "Found N files:" header
+        lines = text.strip().split("\n")
+        for line in lines[1:max_results + 1]:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Parse "ファイル名 (mimeType)" format
+            match = re.match(r"^(.+?)\s*\(([^)]+)\)$", line)
+            if match:
+                title = match.group(1).strip()
+                mime_type = match.group(2).strip()
+            else:
+                title = line
+                mime_type = "unknown"
+
+            # Try to get the actual webViewLink from Google Drive API
+            web_view_link = _get_webviewlink_from_drive_api(title)
+
+            if web_view_link:
+                uri = web_view_link
+            else:
+                # Fallback: Construct a Google Drive search URL using the filename
+                uri = f"https://drive.google.com/drive/search?q={quote(title)}"
+                logger.debug("Using search URL fallback for '%s'", title)
+
+            results.append({
+                "service": "gdrive",
+                "title": title,
+                "snippet": f"Type: {mime_type}",
+                "uri": uri,
+                "webViewLink": uri,
+                "kind": "file",
+                "mimeType": mime_type,
+            })
+    except Exception as exc:
+        logger.warning("Failed to parse GDrive text: %s", exc)
+
+    return results
+
+
 def _parse_slack_csv_results(csv_text: str, max_results: int = 3) -> list[Mapping[str, Any]]:
     """Parse CSV results from korotovsky/slack-mcp-server.
 
     The real Slack MCP server returns CSV with columns:
     MsgID,UserID,UserName,RealName,Channel,ThreadTs,Text,Time,Reactions,Cursor
+
+    Known limitations (as of korotovsky/slack-mcp-server v1.1.26):
+    - Channel field contains channel NAME (e.g., "#general"), not channel ID (e.g., "C02Q09X2N")
+    - No permalink field is included in the CSV output
+    - Workspace name must be provided via SLACK_WORKSPACE env var
+
+    This means generated URIs use channel names instead of IDs, which may not work
+    correctly for all Slack configurations. See:
+    https://github.com/korotovsky/slack-mcp-server/issues/XXX (TODO: file issue)
     """
     import csv
     import io
+    import os
 
     results = []
     try:
@@ -229,11 +466,18 @@ def _parse_slack_csv_results(csv_text: str, max_results: int = 3) -> list[Mappin
             # The MsgID is in format like "1762499528.459139" which is the timestamp
             thread_ts = msg_id
 
+            # Construct a pseudo-permalink for reference
+            # Format: slack://channel/timestamp (or use SLACK_WORKSPACE env if available)
+            workspace = os.getenv("SLACK_WORKSPACE", "workspace")
+            channel_display = channel.lstrip("#") if channel else "channel"
+            ts_for_url = msg_id.replace(".", "") if msg_id else ""
+            uri = f"https://{workspace}.slack.com/archives/{channel_display}/p{ts_for_url}" if ts_for_url else ""
+
             results.append({
                 "service": "slack",
                 "title": f"Message from {user}" if user else "Slack message",
                 "snippet": text[:200] if text else "",
-                "uri": "",  # Real server doesn't return permalinks
+                "uri": uri,
                 "kind": "message",
                 "channel": channel,  # Channel name, not ID
                 "thread_ts": thread_ts,
@@ -282,22 +526,45 @@ def create_search_runner(
                 arguments,
             )
 
-            # Handle Slack's special CSV format
-            if service == "slack" and isinstance(result, list) and result:
+            # Handle real MCP server text responses
+            # Real servers return [{"type": "text", "text": "..."}] format
+            if isinstance(result, list) and result:
                 first_item = result[0]
                 if isinstance(first_item, dict) and first_item.get("type") == "text":
-                    csv_text = first_item.get("text", "")
-                    return _parse_slack_csv_results(csv_text, max_results)
+                    text_content = first_item.get("text", "")
 
-            # Normalize results to expected format (for other services and mock servers)
+                    # Slack: CSV format
+                    if service == "slack":
+                        return _parse_slack_csv_results(text_content, max_results)
+
+                    # GitHub: JSON format with items array
+                    if service == "github" and text_content.strip().startswith("{"):
+                        return _parse_github_json_results(text_content, max_results)
+
+                    # GDrive: Plain text "Found N files:" format
+                    if service in ("gdrive", "drive") and "Found" in text_content:
+                        return _parse_gdrive_text_results(text_content, max_results)
+
+            # Normalize results to expected format (for mock servers and structured responses)
             normalized = []
             for item in result if isinstance(result, list) else [result]:
                 if isinstance(item, dict):
+                    # Extract URI from various possible field names used by real MCP servers
+                    # GitHub uses: html_url, url
+                    # GDrive uses: webViewLink, uri
+                    uri = (
+                        item.get("uri")
+                        or item.get("url")
+                        or item.get("html_url")  # GitHub search_code returns html_url
+                        or item.get("webViewLink")  # GDrive returns webViewLink
+                        or item.get("permalink")
+                        or ""
+                    )
                     normalized.append({
                         "service": service,
                         "title": item.get("title", item.get("name", "Untitled")),
                         "snippet": item.get("snippet", item.get("text", ""))[:200],
-                        "uri": item.get("uri", item.get("url", item.get("permalink", ""))),
+                        "uri": uri,
                         "kind": item.get("kind", item.get("type", "file")),
                         **{k: v for k, v in item.items() if k not in ("title", "snippet", "uri", "kind")},
                     })
@@ -398,6 +665,74 @@ SERVICE_NAME_MAP = {
 }
 
 
+def create_github_combined_search_runner(
+    client: StdioMcpClient,
+) -> Any:
+    """Create a GitHub search runner that searches both code and issues.
+
+    This runner calls search_code, search_issues (for issues), and
+    search_issues (for PRs) in parallel, then merges the results.
+    """
+    code_runner = create_search_runner(client, "github", "search_code")
+    issues_runner = create_search_runner(client, "github", "search_issues")
+
+    async def combined_runner(params: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        query = params.get("query", "")
+        max_results = params.get("max_results", 3)
+
+        # GitHub search_issues requires 'is:issue' or 'is:pull-request' in the query.
+        # We need to run separate queries for issues and PRs since an item cannot be
+        # both an issue AND a PR (using "is:issue is:pr" returns zero results).
+        has_type_filter = any(
+            f in query.lower() for f in ("is:issue", "is:pr", "is:pull-request")
+        )
+
+        # Build query params for issues and PRs
+        if has_type_filter:
+            # User already specified a type filter, use as-is
+            issues_params = {**params, "query": query}
+            prs_params = None  # Skip PR search if user specified a type
+        else:
+            # Search for both issues and PRs separately
+            issues_params = {**params, "query": f"{query} is:issue"}
+            prs_params = {**params, "query": f"{query} is:pr"}
+
+        # Run searches in parallel
+        code_task = asyncio.create_task(code_runner(params))
+        issues_task = asyncio.create_task(issues_runner(issues_params))
+        prs_task = (
+            asyncio.create_task(issues_runner(prs_params)) if prs_params else None
+        )
+
+        code_results: list[Mapping[str, Any]] = []
+        issues_results: list[Mapping[str, Any]] = []
+        prs_results: list[Mapping[str, Any]] = []
+
+        # Gather results, handling failures gracefully
+        try:
+            code_results = await code_task
+        except Exception as exc:
+            logger.debug("GitHub code search failed: %s", exc)
+
+        try:
+            issues_results = await issues_task
+        except Exception as exc:
+            logger.debug("GitHub issues search failed: %s", exc)
+
+        if prs_task:
+            try:
+                prs_results = await prs_task
+            except Exception as exc:
+                logger.debug("GitHub PRs search failed: %s", exc)
+
+        # Merge results: prioritize issues/PRs, then code
+        # Limit total to max_results
+        combined = issues_results + prs_results + code_results
+        return combined[:max_results]
+
+    return combined_runner
+
+
 async def create_mcp_runners_from_processes(
     processes: Mapping[str, asyncio.subprocess.Process],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -417,13 +752,20 @@ async def create_mcp_runners_from_processes(
         service = SERVICE_NAME_MAP.get(raw_service, raw_service)
         client = StdioMcpClient(process, service)
 
-        search_tool = SEARCH_TOOLS.get(service) or SEARCH_TOOLS.get(raw_service)
-        if search_tool:
-            runner = create_search_runner(client, service, search_tool)
+        # For GitHub, use combined runner that searches both code and issues
+        if service == "github":
+            runner = create_github_combined_search_runner(client)
             search_runners[service] = runner
-            # Also register under original name for compatibility
             if raw_service != service:
                 search_runners[raw_service] = runner
+        else:
+            search_tool = SEARCH_TOOLS.get(service) or SEARCH_TOOLS.get(raw_service)
+            if search_tool:
+                runner = create_search_runner(client, service, search_tool)
+                search_runners[service] = runner
+                # Also register under original name for compatibility
+                if raw_service != service:
+                    search_runners[raw_service] = runner
 
         # Add fetch runners with both simple and qualified names
         # Check if service has a fetch tool defined (can be None for resource-based fetch)
@@ -436,6 +778,11 @@ async def create_mcp_runners_from_processes(
             else:
                 # For resource-based fetch (tool_name=None), register with special name
                 fetch_runners[f"{service}.__read_resource__"] = runner
+            
+            # For GitHub, also register get_file_contents for code search results
+            if service == "github":
+                file_contents_runner = create_fetch_runner(client, service, "get_file_contents")
+                fetch_runners["github.get_file_contents"] = file_contents_runner
             
             # Always register a __read_resource__ runner for services that support it
             # This allows code search results to be fetched via resources/read

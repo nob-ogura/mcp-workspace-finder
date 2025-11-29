@@ -369,15 +369,24 @@ def repl_loop(
         if handled:
             continue
 
-        # Reuse one-shot pipeline for actual queries
-        run_oneshot(
-            line,
-            force_mock=force_mock,
-            config_path=config_path,
-            llm_client=llm_client,
-            search_runner=search_runner,
-            summarizer=summarizer,
-        )
+        # Use MCP servers for search when LLM client is available
+        if llm_client is not None:
+            run_oneshot_with_mcp_sync(
+                line,
+                force_mock=force_mock,
+                config_path=config_path,
+                llm_client=llm_client,
+            )
+        else:
+            # Fallback to simple echo mode without MCP
+            run_oneshot(
+                line,
+                force_mock=force_mock,
+                config_path=config_path,
+                llm_client=llm_client,
+                search_runner=search_runner,
+                summarizer=summarizer,
+            )
 
 
 def _looks_like_fetch_results(items: list[Any]) -> bool:

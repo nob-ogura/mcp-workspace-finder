@@ -106,6 +106,6 @@ def test_oneshot_renders_summary_with_links(monkeypatch):
 
     out = console.export_text()
     assert "Slack" in out
-    assert "根拠リンク" in out
-    assert "[1] Slack thread (slack)" in out
+    # URL should be injected directly under the item (not in a separate section)
+    assert "https://slack.test/1" in out
     assert "Result:" not in out

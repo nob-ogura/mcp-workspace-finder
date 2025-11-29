@@ -52,20 +52,51 @@ class GitHubMcpServer(BaseMcpServer):
                     "required": ["owner", "repo", "issue_number"],
                 },
             },
+            {
+                "name": "get_file_contents",
+                "description": "Get the contents of a file from a repository",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "owner": {"type": "string"},
+                        "repo": {"type": "string"},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["owner", "repo", "path"],
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        if tool_name in ("search_code", "search_issues"):
+        if tool_name == "search_code":
             query = arguments.get("q", "")
             limit = arguments.get("per_page", 3)
-            kind = "issue" if tool_name == "search_issues" else "code"
             return [
                 {
                     "service": "github",
-                    "title": f"GitHub {kind} matching {query}",
-                    "snippet": f"This is a mock GitHub {kind} about {query}",
-                    "uri": f"https://github.com/org/repo/{kind}/{i}",
-                    "kind": kind,
+                    "title": f"org/repo: src/file{i}.py",
+                    "snippet": f"This is a mock GitHub code about {query}",
+                    "uri": f"https://github.com/org/repo/blob/main/src/file{i}.py",
+                    "kind": "code",
+                    "owner": "org",
+                    "repo": "repo",
+                    "path": f"src/file{i}.py",
+                }
+                for i in range(min(limit, 5))
+            ]
+        elif tool_name == "search_issues":
+            query = arguments.get("q", "")
+            limit = arguments.get("per_page", 3)
+            return [
+                {
+                    "service": "github",
+                    "title": f"GitHub issue matching {query}",
+                    "snippet": f"This is a mock GitHub issue about {query}",
+                    "uri": f"https://github.com/org/repo/issues/{i}",
+                    "kind": "issue",
+                    "owner": "org",
+                    "repo": "repo",
+                    "issue_number": i,
                 }
                 for i in range(min(limit, 5))
             ]
@@ -74,6 +105,11 @@ class GitHubMcpServer(BaseMcpServer):
             repo = arguments.get("repo", "")
             issue_number = arguments.get("issue_number", 0)
             return [{"text": f"Full content of GitHub issue from {owner}/{repo}#{issue_number}"}]
+        elif tool_name == "get_file_contents":
+            owner = arguments.get("owner", "")
+            repo = arguments.get("repo", "")
+            path = arguments.get("path", "")
+            return [{"text": f"# File contents from {owner}/{repo}/{path}\n\ndef main():\n    pass"}]
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
 
