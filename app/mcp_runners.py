@@ -526,9 +526,11 @@ async def run_oneshot_with_mcp(
             return None
 
         # Generate search parameters
+        alternatives: list[str] = []
         if llm_client is not None:
             generation = generate_search_parameters(query, llm_client)
             searches = generation.searches
+            alternatives = generation.alternatives
         else:
             # Fallback: create simple search for each available service
             searches = [
@@ -547,6 +549,7 @@ async def run_oneshot_with_mcp(
             search_runners=search_runners,
             fetch_runners=fetch_runners,
             llm_client=llm_client,
+            alternatives=alternatives,
         )
 
         return result

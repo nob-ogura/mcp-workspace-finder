@@ -573,6 +573,7 @@ class TestOneshotMainEntry:
             ],
             warnings=[],
             used_fallback=False,
+            alternatives=["設計ドキュメント 要件", "設計 仕様書"],
         )
 
         # Create a runner that returns the mock result

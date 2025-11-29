@@ -33,6 +33,7 @@ class SearchFetchSummaryResult:
     links: list[EvidenceLink]
     warnings: list[str]
     used_fallback: bool
+    alternatives: list[str]
 
 
 def _write_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -134,6 +135,7 @@ async def run_search_fetch_and_summarize_pipeline(
     initial_warnings: list[str] | None = None,
     debug_enabled: bool = False,
     log_dir: Path | None = None,
+    alternatives: list[str] | None = None,
 ) -> SearchFetchSummaryResult:
     """Execute search+fetch asynchronously then summarize with evidence links."""
 
@@ -160,4 +162,5 @@ async def run_search_fetch_and_summarize_pipeline(
         links=summary_result.links,
         warnings=summary_result.warnings,
         used_fallback=summary_result.used_fallback,
+        alternatives=alternatives or [],
     )

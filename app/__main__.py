@@ -433,8 +433,9 @@ def run_oneshot_with_mcp_sync(
             console.print("[yellow]MCP サーバーを起動できませんでした。--mock モードで再試行してください。[/]")
             return
 
-        # Render summary with evidence links
-        if _render_summary_output(result, []):
+        # Render summary with evidence links and alternatives
+        alternatives = getattr(result, "alternatives", [])
+        if _render_summary_output(result, alternatives):
             return
 
         # Fallback display
