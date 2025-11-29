@@ -30,6 +30,8 @@ def _assert_progress(output: str):
 
 def test_oneshot_with_query_shows_progress_and_exits(monkeypatch):
     _force_tty(monkeypatch)
+    # Mock LLM client to None so query is echoed back (no LLM transformation)
+    monkeypatch.setattr(main_module, "create_llm_client", lambda: None)
 
     result = runner.invoke(main_module.app, ["--query", "GitHub の最新PRを教えて"])
 
@@ -43,6 +45,8 @@ def test_oneshot_with_query_shows_progress_and_exits(monkeypatch):
 
 def test_oneshot_with_stdin_shows_progress_and_exits(monkeypatch):
     _force_stdin_pipe(monkeypatch)
+    # Mock LLM client to None so query is echoed back (no LLM transformation)
+    monkeypatch.setattr(main_module, "create_llm_client", lambda: None)
 
     result = runner.invoke(main_module.app, [], input="Google Driveの設計資料\n")
 
@@ -56,6 +60,8 @@ def test_oneshot_with_stdin_shows_progress_and_exits(monkeypatch):
 
 def test_oneshot_uses_progress_display(monkeypatch):
     _force_tty(monkeypatch)
+    # Mock LLM client to None to avoid real API calls
+    monkeypatch.setattr(main_module, "create_llm_client", lambda: None)
 
     calls = []
 

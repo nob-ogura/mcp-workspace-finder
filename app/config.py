@@ -40,7 +40,13 @@ class ServerDefinition:
     auth_files: list[str] = field(default_factory=list)
 
     def required_env_keys(self) -> set[str]:
-        required: set[str] = set(self.env.keys())
+        """Return the set of environment variables that must be set.
+        
+        Note: self.env.keys() are the DESTINATION keys we set in the subprocess,
+        not the SOURCE keys we read from. Only placeholders like ${VAR} in values
+        represent actual environment variables we need to have set.
+        """
+        required: set[str] = set()
         required.update(_extract_placeholders(self.env.values()))
         required.update(_extract_placeholders(self.auth_files))
         return required

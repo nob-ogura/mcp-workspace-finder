@@ -35,14 +35,23 @@ async def test_search_and_fetch_execute_in_parallel():
 
     async def delayed_search(params):
         await asyncio.sleep(delay)
-        return [
-            {
-                "service": params["service"],
-                "title": f"{params['service']} title",
-                "snippet": "preview",
-                "uri": f"{params['service']}://1",
-            }
-        ]
+        service = params["service"]
+        result = {
+            "service": service,
+            "title": f"{service} title",
+            "snippet": "preview",
+            "uri": f"{service}://1",
+        }
+        # Add required fields for proper fetch
+        if service == "slack":
+            result["channel_id"] = "C123ABC"
+            result["thread_ts"] = "1234567890.123456"
+        elif service == "github":
+            result["owner"] = "org"
+            result["repo"] = "repo"
+            result["issue_number"] = 1
+            result["kind"] = "issue"
+        return [result]
 
     async def delayed_fetch(result):
         await asyncio.sleep(delay)
@@ -52,26 +61,47 @@ async def test_search_and_fetch_execute_in_parallel():
     output = await run_search_and_fetch_pipeline(
         _build_search_payloads(),
         search_runners={service: delayed_search for service in SERVICES},
-        fetch_runners={service: delayed_fetch for service in SERVICES},
+        fetch_runners={
+            "slack": delayed_fetch,
+            "slack.conversations_replies": delayed_fetch,
+            "github": delayed_fetch,
+            "github.get_issue": delayed_fetch,
+            # Don't include gdrive.resource to test skip behavior
+        },
     )
     elapsed = time.perf_counter() - start
 
     assert elapsed < 0.4
+    # GDrive uses skip fetch (snippet as content), so check all services have docs
     assert {doc.service for doc in output.documents} == set(SERVICES)
-    assert all(doc.content.startswith("content for") for doc in output.documents)
+    # Slack and GitHub get fetched content, GDrive uses snippet (via skip)
+    for doc in output.documents:
+        if doc.service in ("slack", "github"):
+            assert doc.content.startswith("content for")
+        else:
+            assert doc.content == "preview"  # snippet used as content for gdrive (skip)
 
 
 @pytest.mark.anyio("asyncio")
 async def test_fetch_failure_does_not_block_other_services():
     async def search_once(params):
-        return [
-            {
-                "service": params["service"],
-                "title": f"{params['service']} title",
-                "snippet": "preview",
-                "uri": f"{params['service']}://1",
-            }
-        ]
+        service = params["service"]
+        result = {
+            "service": service,
+            "title": f"{service} title",
+            "snippet": "preview",
+            "uri": f"{service}://1",
+        }
+        # Add required fields for proper fetch
+        if service == "slack":
+            result["channel_id"] = "C123ABC"
+            result["thread_ts"] = "1234567890.123456"
+        elif service == "github":
+            result["owner"] = "org"
+            result["repo"] = "repo"
+            result["issue_number"] = 1
+            result["kind"] = "issue"
+        return [result]
 
     async def ok_fetch(result):
         return f"ok-{result.service}"
@@ -84,12 +114,15 @@ async def test_fetch_failure_does_not_block_other_services():
         search_runners={service: search_once for service in SERVICES},
         fetch_runners={
             "slack": ok_fetch,
-            "gdrive": ok_fetch,
+            "slack.conversations_replies": ok_fetch,
+            # gdrive uses skip, no fetch runner needed
             "github": failing_fetch,
+            "github.get_issue": failing_fetch,
         },
     )
 
     services = {doc.service for doc in output.documents}
+    # slack and gdrive succeed (gdrive via skip), github fails
     assert services == {"slack", "gdrive"}
     assert any("github" in warning.lower() for warning in output.warnings)
 
@@ -101,7 +134,14 @@ async def test_fetch_respects_max_results_limit():
     async def search_many(params):
         # deliberately return more than the cap to ensure the pipeline trims it
         return [
-            {"service": params["service"], "title": f"t{i}", "snippet": "", "uri": f"u{i}"}
+            {
+                "service": params["service"],
+                "title": f"t{i}",
+                "snippet": f"snippet{i}",
+                "uri": f"u{i}",
+                "channel_id": f"C{i}",  # Include channel_id so fetch isn't skipped
+                "thread_ts": f"{i}.0",
+            }
             for i in range(5)
         ]
 
@@ -112,7 +152,10 @@ async def test_fetch_respects_max_results_limit():
     output = await run_search_and_fetch_pipeline(
         [{"service": "slack", "query": "design", "max_results": 5}],
         search_runners={"slack": search_many},
-        fetch_runners={"slack": record_fetch},
+        fetch_runners={
+            "slack": record_fetch,
+            "slack.conversations_replies": record_fetch,
+        },
     )
 
     assert len(calls) == 3  # capped at MAX_RESULTS_PER_SERVICE
@@ -171,8 +214,10 @@ async def test_transient_fetch_retried_once_with_backoff(caplog):
             {
                 "service": params["service"],
                 "title": "t1",
-                "snippet": "",
+                "snippet": "test snippet",
                 "uri": "uri1",
+                "channel_id": "C123",  # Include channel_id so fetch isn't skipped
+                "thread_ts": "123.456",
             }
         ]
 
@@ -189,7 +234,10 @@ async def test_transient_fetch_retried_once_with_backoff(caplog):
     output = await run_search_and_fetch_pipeline(
         [{"service": "slack", "query": "design"}],
         search_runners={"slack": search_once},
-        fetch_runners={"slack": flaky_fetch},
+        fetch_runners={
+            "slack": flaky_fetch,
+            "slack.conversations_replies": flaky_fetch,
+        },
     )
     elapsed = time.perf_counter() - start
 
@@ -204,26 +252,28 @@ async def test_transient_fetch_retried_once_with_backoff(caplog):
 async def test_cli_override_forces_mock_mode_and_logs(monkeypatch, tmp_path, caplog):
     caplog.set_level("WARNING")
 
+    # Use github instead of gdrive since gdrive uses resource-based fetch
     definitions = _write_config(
         tmp_path,
         """
         services:
-          gdrive:
+          github:
             mode: real
             kind: node
             exec: /bin/echo
             args: []
             workdir: .
             env:
-              DRIVE_TOKEN_PATH: ${DRIVE_TOKEN_PATH}
+              GITHUB_TOKEN: ${GITHUB_TOKEN}
             mock:
               exec: /bin/echo
-              args: ["mock-drive"]
+              args: ["mock-github"]
               workdir: .
         """,
     )
 
     monkeypatch.setenv("ALLOW_REAL", "1")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
 
     real_calls: list[str] = []
     mock_calls: list[str] = []
@@ -235,8 +285,12 @@ async def test_cli_override_forces_mock_mode_and_logs(monkeypatch, tmp_path, cap
             {
                 "service": params["service"],
                 "title": "t",
-                "snippet": "",
+                "snippet": "test",
                 "uri": "uri1",
+                "kind": "issue",
+                "owner": "org",
+                "repo": "repo",
+                "issue_number": 1,
             }
         ]
 
@@ -246,8 +300,12 @@ async def test_cli_override_forces_mock_mode_and_logs(monkeypatch, tmp_path, cap
             {
                 "service": params["service"],
                 "title": "t",
-                "snippet": "",
+                "snippet": "test",
                 "uri": "uri1",
+                "kind": "issue",
+                "owner": "org",
+                "repo": "repo",
+                "issue_number": 1,
             }
         ]
 
@@ -262,23 +320,23 @@ async def test_cli_override_forces_mock_mode_and_logs(monkeypatch, tmp_path, cap
     prepared = prepare_mode_aware_runners(
         definitions,
         force_mock=True,
-        search_runners_real={"gdrive": real_search},
-        search_runners_mock={"gdrive": mock_search},
-        fetch_runners_real={"gdrive.read_resource": real_fetch},
-        fetch_runners_mock={"gdrive.read_resource": mock_fetch},
+        search_runners_real={"github": real_search},
+        search_runners_mock={"github": mock_search},
+        fetch_runners_real={"github.get_issue": real_fetch, "github": real_fetch},
+        fetch_runners_mock={"github.get_issue": mock_fetch, "github": mock_fetch},
     )
 
     output = await run_search_and_fetch_pipeline(
-        [{"service": "gdrive", "query": "design"}],
+        [{"service": "github", "query": "design"}],
         search_runners=prepared.search_runners,
         fetch_runners=prepared.fetch_runners,
         initial_warnings=prepared.warnings,
     )
 
-    assert prepared.resolved_services["gdrive"].selected_mode is RunMode.MOCK
+    assert prepared.resolved_services["github"].selected_mode is RunMode.MOCK
     assert not real_calls
-    assert mock_calls == ["gdrive"]
-    assert fetch_calls == [("mock", "gdrive")]
+    assert mock_calls == ["github"]
+    assert fetch_calls == [("mock", "github")]
     assert any("CLI override" in warning for warning in output.warnings)
     assert any("CLI override" in record.message for record in caplog.records)
 
@@ -320,6 +378,11 @@ async def test_allow_real_prefers_real_without_override(monkeypatch, tmp_path, c
                 "title": "t",
                 "snippet": "",
                 "uri": "uri1",
+                # Include issue metadata for proper fetch routing
+                "kind": "issue",
+                "owner": "test-owner",
+                "repo": "test-repo",
+                "issue_number": 123,
             }
         ]
 
@@ -331,6 +394,11 @@ async def test_allow_real_prefers_real_without_override(monkeypatch, tmp_path, c
                 "title": "t",
                 "snippet": "",
                 "uri": "uri1",
+                # Include issue metadata for proper fetch routing
+                "kind": "issue",
+                "owner": "test-owner",
+                "repo": "test-repo",
+                "issue_number": 123,
             }
         ]
 

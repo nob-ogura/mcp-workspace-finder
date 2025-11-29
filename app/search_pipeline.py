@@ -188,6 +188,18 @@ async def run_search_and_fetch_pipeline(
     mapped_results = map_search_results(raw_results)
 
     async def _run_fetch(result: SearchResult) -> FetchResult | None:
+        # Skip fetch if explicitly marked as skip (e.g., "slack.skip")
+        if result.fetch_tool.endswith(".skip"):
+            # Use snippet as content when fetch is skipped
+            return FetchResult(
+                service=result.service,
+                kind=result.kind,
+                title=result.title,
+                snippet=result.snippet,
+                uri=result.uri,
+                content=result.snippet,  # Use snippet as content
+            )
+
         runner = fetch_runners.get(result.fetch_tool) or fetch_runners.get(result.service)
         if not runner:
             warning = f"{result.service} fetch runner missing for {result.fetch_tool}"

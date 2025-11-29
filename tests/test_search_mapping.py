@@ -7,8 +7,9 @@ def test_mapping_adds_fetch_params_per_service():
             "service": "slack",
             "title": "Design thread",
             "snippet": "initial comment",
-            "uri": "https://slack.com/archives/C1/p1",
-            "thread_ts": "171.0",
+            "uri": "https://slack.com/archives/C123ABC/p1234567890123456",
+            "channel_id": "C123ABC",
+            "thread_ts": "1234567890.123456",
         },
         {
             "service": "github",
@@ -16,12 +17,15 @@ def test_mapping_adds_fetch_params_per_service():
             "title": "Bug #1",
             "snippet": "null pointer",
             "uri": "https://api.github.com/repos/org/repo/issues/1",
+            "owner": "org",
+            "repo": "repo",
+            "issue_number": 1,
         },
         {
             "service": "gdrive",
             "title": "Design Doc",
             "snippet": "architecture notes",
-            "uri": "https://drive.google.com/file/d/123",
+            "uri": "gdrive:///file123",
         },
     ]
 
@@ -31,17 +35,21 @@ def test_mapping_adds_fetch_params_per_service():
 
     slack = mapped[0]
     assert isinstance(slack, SearchResult)
-    assert slack.fetch_tool == "slack.get_thread"
-    assert slack.fetch_params["permalink"] == raw_results[0]["uri"]
-    assert slack.fetch_params["thread_ts"] == raw_results[0]["thread_ts"]
+    # With proper channel_id format, should use conversations_replies
+    assert slack.fetch_tool == "slack.conversations_replies"
+    assert slack.fetch_params["channel_id"] == "C123ABC"
+    assert slack.fetch_params["thread_ts"] == "1234567890.123456"
 
     github = mapped[1]
     assert github.fetch_tool == "github.get_issue"
-    assert github.fetch_params["uri"] == raw_results[1]["uri"]
+    assert github.fetch_params["owner"] == "org"
+    assert github.fetch_params["repo"] == "repo"
+    assert github.fetch_params["issue_number"] == 1
 
     gdrive = mapped[2]
-    assert gdrive.fetch_tool == "gdrive.read_resource"
-    assert gdrive.fetch_params["uri"] == raw_results[2]["uri"]
+    # GDrive uses resources (not tools), so fetch is skipped
+    assert gdrive.fetch_tool == "gdrive.skip"
+    assert gdrive.fetch_params == {}
 
 
 def test_mapping_enforces_max_results_per_service():

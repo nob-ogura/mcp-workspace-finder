@@ -31,7 +31,7 @@ services:
       - "@modelcontextprotocol/server-github"
     workdir: .
     env:
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
     auth_files:
       - path: secrets/github_token.json
         description: Optional cached OAuth token; PAT is primary.

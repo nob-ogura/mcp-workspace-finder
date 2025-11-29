@@ -43,6 +43,8 @@ def test_auto_mode_runs_oneshot_when_query_option(monkeypatch):
 
     monkeypatch.setattr(main_module, "run_oneshot", lambda query, **kwargs: called.setdefault("oneshot", query))
     monkeypatch.setattr(main_module, "_stream_isatty", lambda stream: True)
+    # Ensure LLM client is None so run_oneshot is called instead of run_oneshot_with_mcp_sync
+    monkeypatch.setattr(main_module, "create_llm_client", lambda: None)
 
     result = runner.invoke(main_module.app, ["--query", "社内ナレッジを検索"])
 
@@ -63,6 +65,8 @@ def test_auto_mode_runs_oneshot_when_stdin_piped(monkeypatch):
 
     monkeypatch.setattr(main_module, "_stream_isatty", fake_isatty)
     monkeypatch.setattr(main_module, "run_oneshot", lambda query, **kwargs: called.setdefault("oneshot", query))
+    # Ensure LLM client is None so run_oneshot is called instead of run_oneshot_with_mcp_sync
+    monkeypatch.setattr(main_module, "create_llm_client", lambda: None)
 
     result = runner.invoke(main_module.app, [], input="Slack のDMを検索\n")
 

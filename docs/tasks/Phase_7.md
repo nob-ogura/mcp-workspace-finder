@@ -113,3 +113,97 @@
   もし: パイプラインを実行する
   ならば: 総処理時間が 2 秒未満となり、並列化が有効であることが確認できる
 ```
+
+---
+
+## タスク7: MCP 検索接続の実装 ✅ 完了
+
+### 実装サマリー
+
+TDD で以下を実装:
+
+1. **MCP プロトコル対応モックサーバー**
+   - `tests/mocks/base_mcp_server.py`: JSON-RPC 2.0 対応の基底クラス
+   - `tests/mocks/{slack,github,gdrive}_server.py`: 各サービスのモックサーバー
+
+2. **MCP ランナー統合**
+   - `app/mcp_runners.py`: `run_oneshot_with_mcp()` 関数を追加
+   - サービス名正規化 (`drive` → `gdrive`) に対応
+
+3. **メインエントリーポイント統合**
+   - `app/__main__.py`: LLM クライアントがある場合は MCP パイプラインを使用
+
+4. **テスト**
+   - `tests/test_oneshot_mcp_integration.py`: 7 つの統合テスト
+   - 全 87 テストがパス
+
+### 背景
+
+現在、`python -m app --query "LLM"` を実行すると：
+- LLM クライアントが初期化され、検索パラメータが生成される
+- しかし、実際の MCP サーバーへの検索は実行されていない
+- `search_runner` がデフォルトの fallback lambda を使用しているため
+
+### 目標
+
+oneshot モードで MCP サーバーを起動し、実際に検索・取得・要約を行えるようにする。
+
+### 実装すべき内容
+
+1. **oneshot モードでの MCP サーバー起動**
+   - `app/__main__.py` の `main()` 関数で、oneshot モード時にも MCP サーバーを起動する
+   - `launch_services_async()` を呼び出してサーバープロセスを取得する
+   - 参考: REPL モードでは `_run_startup_with_status_board()` で起動している
+
+2. **MCP クライアント接続の実装**
+   - `app/mcp_runners.py` の `StdioMcpClient` を完成させる
+   - 起動した MCP サーバーの stdin/stdout と通信できるようにする
+   - MCP プロトコル (JSON-RPC 2.0) に準拠したリクエスト/レスポンス処理
+
+3. **search_runner / fetch_runner の生成**
+   - `create_mcp_runners_from_processes()` を使って実際のランナーを生成
+   - `prepare_mode_aware_runners()` と組み合わせてモード切り替えに対応
+
+4. **パイプライン統合**
+   - `run_search_fetch_and_summarize_pipeline()` を使って全パイプラインを実行
+   - 結果を `render_summary_with_links()` で表示
+
+### 参考ファイル
+
+- `app/process.py` - MCP サーバーの起動・監視ロジック
+- `app/search_pipeline.py` - 検索・取得パイプライン
+- `app/summary_pipeline.py` - 要約パイプライン（`run_search_fetch_and_summarize_pipeline`）
+- `app/mcp_runners.py` - MCP クライアントランナー（現在はプレースホルダー）
+- `tests/test_search_pipeline_integration.py` - パイプライン統合テストの参考実装
+
+### 受入基準 (Gherkin)
+
+```
+シナリオ: oneshot モードで MCP 経由のデータ取得が動作する
+  前提: .env に OPENAI_API_KEY, SLACK_USER_TOKEN, GITHUB_TOKEN, DRIVE_TOKEN_PATH が設定済み
+  かつ: servers.yaml で各サービスが mode: real に設定されている
+  もし: poetry run python -m app --query "設計ドキュメント" を実行する
+  ならば: MCP サーバーが起動し、実際の検索が実行される
+  かつ: 検索結果が取得され、LLM による要約が生成される
+  かつ: 根拠リンク付きの結果が表示される
+```
+```
+シナリオ: --mock モードではモックサーバーが使用される
+  前提: --mock オプションが指定されている
+  もし: poetry run python -m app --mock --query "テスト" を実行する
+  ならば: モックサーバーが起動し、モックデータで検索が実行される
+```
+```
+シナリオ: MCP サーバー起動失敗時にエラーメッセージを表示
+  前提: 必要な認証情報が不足している
+  もし: poetry run python -m app --query "テスト" を実行する
+  ならば: どのサービスが起動失敗したかを示す警告が表示される
+  かつ: 起動成功したサービスでは検索が実行される
+```
+
+### 注意事項
+
+- MCP サーバーとの通信は stdio (標準入出力) 経由
+- 各サーバーは異なる形式のレスポンスを返す可能性があるため、`search_mapping.py` の正規化ロジックを活用
+- サーバー起動のタイムアウト処理を適切に設定
+- 既存のテスト (`test_search_pipeline_integration.py` など) が引き続きパスすることを確認
