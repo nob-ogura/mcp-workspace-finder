@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
+from app.retry_policy import run_with_retry
 from app.search_mapping import MAX_RESULTS_PER_SERVICE, SearchResult, map_search_results
 
 logger = logging.getLogger(__name__)
@@ -67,13 +68,26 @@ async def run_search_and_fetch_pipeline(
             raise ValueError(f"no search runner registered for {service}")
 
         capped = _cap_max_results(payload, max_results_per_service)
-        try:
-            return await runner(capped) or []
-        except Exception as exc:  # noqa: BLE001
-            warning = f"{service} search failed: {exc}"
+
+        outcome = await run_with_retry(
+            lambda: runner(capped),
+            service=service,
+            stage="search",
+            warnings=warnings,
+            logger=logger,
+        )
+
+        if not outcome.success:
+            return []
+
+        results = outcome.result or []
+        if not isinstance(results, list):
+            warning = f"{service} search returned non-list result; skipping"
             warnings.append(warning)
             logger.warning(warning)
             return []
+
+        return results
 
     search_tasks = [asyncio.create_task(_run_single_search(payload)) for payload in searches]
     raw_batches = await asyncio.gather(*search_tasks) if search_tasks else []
@@ -89,13 +103,18 @@ async def run_search_and_fetch_pipeline(
             logger.warning(warning)
             return None
 
-        try:
-            content = await runner(result)
-        except Exception as exc:  # noqa: BLE001
-            warning = f"{result.service} fetch failed: {exc}"
-            warnings.append(warning)
-            logger.warning(warning)
+        outcome = await run_with_retry(
+            lambda: runner(result),
+            service=result.service,
+            stage="fetch",
+            warnings=warnings,
+            logger=logger,
+        )
+
+        if not outcome.success:
             return None
+
+        content = outcome.result
 
         return FetchResult(
             service=result.service,
