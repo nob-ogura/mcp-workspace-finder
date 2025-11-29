@@ -33,6 +33,7 @@ from app.logging_utils import (
 )
 from app.progress_display import ProgressDisplay
 from app.llm_search import generate_search_parameters, SearchGenerationResult
+from app.summary_display import render_summary_with_links
 
 app = typer.Typer(
     add_completion=False,
@@ -374,6 +375,7 @@ def run_oneshot(
     config_path: Path | None = None,
     llm_client: Any | None = None,
     search_runner: Callable[[list[dict[str, Any]]], list[Any]] | None = None,
+    summarizer: Callable[[str, list[Any], Any | None], Any] | None = None,
 ) -> None:
     """Execute a single query non-interactively then exit."""
     normalized_query = (query or "").strip()
@@ -386,6 +388,9 @@ def run_oneshot(
     if not search_results:
         _render_alternatives_only(generation.alternatives)
         return
+
+    if summarizer is not None:
+        summarizer(normalized_query, search_results, llm_client)
 
     console.print("[bold green]Result:[/]")
     for item in search_results:
@@ -401,10 +406,14 @@ def _generate_with_fallback(query: str, llm_client: Any | None) -> SearchGenerat
     return SearchGenerationResult(searches=[], alternatives=alternatives)
 
 
-def _render_alternatives_only(alternatives: list[str]) -> None:
-    console.print("[yellow]No results found. Try these alternative queries:[/]")
-    for alt in alternatives:
-        console.print(f"- {alt}")
+def _render_alternatives_only(alternatives: list[str] | None) -> None:
+    cleaned = [alt.strip() for alt in alternatives or [] if isinstance(alt, str) and alt.strip()]
+
+    if not cleaned:
+        console.print("[yellow]代替クエリを生成できませんでした[/]")
+        return
+
+    render_summary_with_links(console, "", [], alternatives=cleaned)
 
 
 @app.callback()
